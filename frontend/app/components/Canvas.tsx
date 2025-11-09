@@ -429,7 +429,7 @@ export default function Canvas() {
             onEdgesChange={onEdgesChange}
             onConnect={(c) => setEdges((es) => addEdge({ ...c, type: 'custom' }, es))}
             fitView
-            fitViewOptions={{ padding: 5.5 }}
+            fitViewOptions={{ padding: 2.25 }}
             minZoom={0.1}
             maxZoom={4}
             nodesDraggable={false}
