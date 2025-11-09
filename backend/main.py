@@ -72,6 +72,7 @@ async def generate_endpoint(request: GenerateRequest):
         response = client.beta.chat.completions.parse(
             model="gpt-4o-search-preview-2025-03-11",
             messages=[
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=GenerateResponse

@@ -11,7 +11,32 @@ export function layoutNodes(nodes: Node[], edges: Edge[]): Node[] {
     const height = n.height ?? 340;
     graph.setNode(n.id, { width, height });
   });
-  edges.forEach((e) => graph.setEdge(e.source, e.target));
+
+  edges.forEach((e) => {
+    // Calculate label dimensions if label exists
+    if (e.label && typeof e.label === 'string') {
+      const maxWidth = 300;
+      const charWidth = 8; // Approximate character width for 16px/base font
+      const padding = 24; // Horizontal padding
+
+      // Calculate how many lines the text will wrap to
+      const textWidth = e.label.length * charWidth;
+      const lines = Math.ceil(textWidth / maxWidth);
+
+      // Width is capped at maxWidth
+      const labelWidth = Math.min(textWidth + padding, maxWidth);
+      // Height increases with number of lines (24px per line + padding)
+      const labelHeight = lines * 24 + 20;
+
+      graph.setEdge(e.source, e.target, {
+        width: labelWidth,
+        height: labelHeight,
+        labelpos: 'c'
+      });
+    } else {
+      graph.setEdge(e.source, e.target);
+    }
+  });
 
   dagre.layout(graph);
 

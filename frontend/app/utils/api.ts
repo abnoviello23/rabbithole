@@ -1,7 +1,19 @@
 export interface GeneratedContent {
   title: string;
   body: string;
-  image: string;
+  image?: string;
+}
+
+export interface NodeContext {
+  id: string;
+  title: string;
+  content: string;
+}
+
+export interface GenerateRequest {
+  query: string;
+  path: string;
+  context: Record<string, NodeContext>;
 }
 
 const PLACEHOLDER_IMAGES = [
@@ -12,17 +24,22 @@ const PLACEHOLDER_IMAGES = [
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
-export async function generateContent(query: string): Promise<GeneratedContent> {
+export async function generateContent(
+  query: string,
+  path: string,
+  context: Record<string, NodeContext>
+): Promise<GeneratedContent> {
   try {
-    const response = await fetch(`${API_BASE_URL}/chat`, {
+    const response = await fetch(`${API_BASE_URL}/generate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        message: query,
-        history: [],
-      }),
+        query,
+        path,
+        context,
+      } as GenerateRequest),
     });
 
     if (!response.ok) {
@@ -30,26 +47,11 @@ export async function generateContent(query: string): Promise<GeneratedContent> 
     }
 
     const data = await response.json();
-    const responseText = data.response || '';
-
-    // Extract title from response (first sentence or first line, max 60 chars)
-    let title = query;
-    if (responseText) {
-      const firstSentence = responseText.split(/[.!?]\s+/)[0];
-      if (firstSentence && firstSentence.length <= 60) {
-        title = firstSentence;
-      } else if (responseText.length > 0) {
-        title = responseText.substring(0, 60).trim();
-        if (responseText.length > 60) {
-          title += '...';
-        }
-      }
-    }
 
     return {
-      title: title,
-      body: responseText,
-      image: PLACEHOLDER_IMAGES[Math.floor(Math.random() * PLACEHOLDER_IMAGES.length)],
+      title: data.title || query,
+      body: data.response || '',
+      // image: PLACEHOLDER_IMAGES[Math.floor(Math.random() * PLACEHOLDER_IMAGES.length)],
     };
   } catch (error) {
     console.error('Failed to generate content:', error);
