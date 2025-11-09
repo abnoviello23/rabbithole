@@ -4,6 +4,18 @@ export interface GeneratedContent {
   image: string;
 }
 
+export interface NodeContext {
+  id: string;
+  title: string;
+  content: string;
+}
+
+export interface GenerateRequest {
+  query: string;
+  path: string;
+  context: Record<string, NodeContext>;
+}
+
 const PLACEHOLDER_IMAGES = [
   'https://upload.wikimedia.org/wikipedia/commons/b/bf/IMac_M4_2024_2_%28cropped%29.jpg',
   'https://upload.wikimedia.org/wikipedia/commons/thumb/1/1b/Apple_logo_grey.svg/505px-Apple_logo_grey.svg.png',
@@ -12,17 +24,22 @@ const PLACEHOLDER_IMAGES = [
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
-export async function generateContent(query: string): Promise<GeneratedContent> {
+export async function generateContent(
+  query: string,
+  path: string,
+  context: Record<string, NodeContext>
+): Promise<GeneratedContent> {
   try {
-    const response = await fetch(`${API_BASE_URL}/chat`, {
+    const response = await fetch(`${API_BASE_URL}/generate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        message: query,
-        history: [],
-      }),
+        query,
+        path,
+        context,
+      } as GenerateRequest),
     });
 
     if (!response.ok) {
@@ -30,25 +47,10 @@ export async function generateContent(query: string): Promise<GeneratedContent> 
     }
 
     const data = await response.json();
-    const responseText = data.response || '';
-
-    // Extract title from response (first sentence or first line, max 60 chars)
-    let title = query;
-    if (responseText) {
-      const firstSentence = responseText.split(/[.!?]\s+/)[0];
-      if (firstSentence && firstSentence.length <= 60) {
-        title = firstSentence;
-      } else if (responseText.length > 0) {
-        title = responseText.substring(0, 60).trim();
-        if (responseText.length > 60) {
-          title += '...';
-        }
-      }
-    }
 
     return {
-      title: title,
-      body: responseText,
+      title: data.title || query,
+      body: data.response || '',
       image: PLACEHOLDER_IMAGES[Math.floor(Math.random() * PLACEHOLDER_IMAGES.length)],
     };
   } catch (error) {

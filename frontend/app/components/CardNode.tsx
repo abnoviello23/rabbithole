@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Handle, Position, NodeProps, NodeToolbar } from 'reactflow';
+import { MessageSquarePlus } from 'lucide-react';
 
 export interface CardNodeData {
   title: string;
@@ -16,11 +17,29 @@ interface CardNodeComponentProps extends NodeProps<CardNodeData> {
 
 export function CardNode({ data, id, onAddNote }: CardNodeComponentProps) {
   const [show, setShow] = useState(false);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+
+  // Handle click outside to close the input
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (show && toolbarRef.current && !toolbarRef.current.contains(event.target as Node)) {
+        setShow(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [show]);
 
   return (
     <>
       <NodeToolbar isVisible={show} position={Position.Right}>
-        <div className="rounded-xl border border-white/10 bg-neutral-900 text-neutral-100 shadow-xl p-2 w-64">
+        <div
+          ref={toolbarRef}
+          className="rounded-xl border border-white/10 bg-neutral-900 text-neutral-100 shadow-xl p-2 w-64"
+        >
           <input
             autoFocus
             placeholder="Type and press Enter"
@@ -63,12 +82,11 @@ export function CardNode({ data, id, onAddNote }: CardNodeComponentProps) {
 
         {!data.isLoading && (
           <div
-            onMouseEnter={() => setShow(true)}
-            onMouseLeave={() => setShow(false)}
-            className="absolute top-1/2 -right-6 -translate-y-1/2 w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center cursor-text text-xl"
-            title="Add note/link"
+            onClick={() => setShow(!show)}
+            className="absolute top-1/2 right-0 -translate-y-1/2 w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center cursor-pointer transition-colors"
+            title="Ask a follow-up question"
           >
-            +
+            <MessageSquarePlus className="w-6 h-6" />
           </div>
         )}
 

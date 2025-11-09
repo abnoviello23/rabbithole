@@ -17,12 +17,46 @@ import 'reactflow/dist/style.css';
 import { useCallback, useEffect, useMemo } from 'react';
 import { CardNode, CardNodeData } from './CardNode';
 import { layoutNodes } from '../utils/layout';
-import { generateContent } from '../utils/api';
+import { generateContent, NodeContext } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 
 export default function Canvas() {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState(INITIAL_EDGES);
+
+  // Helper function to build path from root to a given node
+  const buildPath = useCallback((targetNodeId: string, currentEdges: Edge[]): string[] => {
+    const path: string[] = [];
+    let currentId = targetNodeId;
+
+    // Traverse backwards from target to root
+    while (currentId) {
+      path.unshift(currentId);
+      const parentEdge = currentEdges.find((e) => e.target === currentId);
+      if (!parentEdge) break;
+      currentId = parentEdge.source;
+    }
+
+    return path;
+  }, []);
+
+  // Helper function to build context from nodes in path
+  const buildContext = useCallback((pathIds: string[], currentNodes: Node<CardNodeData>[]): Record<string, NodeContext> => {
+    const context: Record<string, NodeContext> = {};
+
+    pathIds.forEach((nodeId) => {
+      const node = currentNodes.find((n) => n.id === nodeId);
+      if (node && node.data) {
+        context[nodeId] = {
+          id: nodeId,
+          title: node.data.title,
+          content: node.data.body,
+        };
+      }
+    });
+
+    return context;
+  }, []);
 
   const handleAddNote = useCallback(async (sourceId: string, query: string) => {
     const nodeId = `node-${Date.now()}`;
@@ -52,15 +86,29 @@ export default function Canvas() {
     };
 
     // Add edge and loading node with immediate layout
-    setEdges((currentEdges) => {
-      const updatedEdges = [...currentEdges, newEdge];
-      setNodes((ns) => layoutNodes([...ns, loadingNode], updatedEdges));
-      return updatedEdges;
+    let currentEdges: Edge[] = [];
+    let currentNodes: Node<CardNodeData>[] = [];
+
+    setEdges((edges) => {
+      currentEdges = [...edges, newEdge];
+      setNodes((ns) => {
+        currentNodes = [...ns, loadingNode];
+        return layoutNodes(currentNodes, currentEdges);
+      });
+      return currentEdges;
     });
 
-    // Generate content
+    // Generate content with full context
     try {
-      const content = await generateContent(query);
+      // Build path from root to source node
+      const pathIds = buildPath(sourceId, currentEdges);
+      const path = pathIds.join('/');
+
+      // Build context from all nodes in path
+      const context = buildContext(pathIds, currentNodes);
+
+      // Generate content with context
+      const content = await generateContent(query, path, context);
 
       // Update node with generated content
       setNodes((ns) =>
@@ -82,7 +130,7 @@ export default function Canvas() {
       setNodes((ns) => ns.filter((n) => n.id !== nodeId));
       setEdges((es) => es.filter((e) => e.id !== edgeId));
     }
-  }, [setNodes, setEdges]);
+  }, [setNodes, setEdges, buildPath, buildContext]);
 
   const nodeTypes = useMemo(
     () => ({
