@@ -267,7 +267,7 @@ useEffect(() => {
         >
           <input
             autoFocus
-            placeholder="Type and press Enter"
+            placeholder="Ask a Follow-up Question"
             className="w-full rounded-lg bg-neutral-800 px-2 py-1 text-sm outline-none"
             onKeyDown={(e) => {
               if (e.key === 'Enter' && e.currentTarget.value.trim()) {
@@ -447,12 +447,12 @@ useEffect(() => {
         )}
         </div>
 
-        {/* Follow-up question button - outside node */}
+        {/* Follow-up question button - positioned at bottom edge of parent node to avoid edge label overlap */}
         {!data.isLoading && !data.isRoot && !data.isSubtopic && (
           <div
             onClick={() => setShow(!show)}
-            className="absolute left-1/2 -translate-x-1/2 w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center cursor-pointer transition-colors nopan"
-            style={{ top: '100%', marginTop: '8px' }}
+            className="absolute left-1/2 w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center cursor-pointer transition-colors nopan z-10"
+            style={{ bottom: '-24px', transform: 'translateX(-50%)' }}
             title="Ask a follow-up question"
           >
             <MessageSquarePlus className="w-6 h-6" />
