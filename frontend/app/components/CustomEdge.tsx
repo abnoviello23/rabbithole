@@ -51,10 +51,10 @@ export function CustomEdge({
           <div
             style={{
               position: 'absolute',
-              transform: `translate(-50%, -50%) translate(${labelX}px,${labelY - 30}px)`,
+              transform: `translate(-50%, -50%) translate(${targetX}px,${targetY - 90}px)`,
               pointerEvents: 'all',
               maxWidth: '240px',
-              borderColor: (isInActivePath && isChatPanelOpen) ? (color || '#60A5FA') : (color || 'rgba(255, 255, 255, 0.1)'),
+              borderColor: 'rgba(255, 255, 255, 0.1)',
               boxShadow: (isInActivePath && isChatPanelOpen) ? `0 0 10px ${color || '#60A5FA'}40` : undefined,
             }}
             className="nodrag nopan bg-neutral-900 border-2 px-3 py-1.5 rounded-lg text-white text-base font-medium shadow-lg whitespace-normal break-words text-center select-text cursor-text"

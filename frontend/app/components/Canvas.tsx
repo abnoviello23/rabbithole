@@ -137,7 +137,7 @@ export default function Canvas() {
       source: sourceId,
       target: nodeId,
       type: 'custom',
-      label: userQuery,
+      label: `> ${userQuery}`,
       style: color ? { stroke: color, strokeWidth: 2 } : undefined,
       markerEnd: color ? { type: MarkerType.ArrowClosed, color } : undefined,
       data: { color, userQuery, selectedContext },
@@ -447,8 +447,8 @@ export default function Canvas() {
             edgeTypes={edgeTypes}
           >
             <Background variant={BackgroundVariant.Dots} gap={32} size={1} color="#2a2a2a" />
-            <MiniMap pannable zoomable maskColor="rgba(0,0,0,0.6)" />
-            <Controls />
+            {/* <MiniMap pannable zoomable maskColor="rgba(0,0,0,0.6)" /> */}
+            {/* <Controls /> */}
           </ReactFlow>
         </div>
       </div>

@@ -248,10 +248,10 @@ useEffect(() => {
         `
       }} />
 
-      <NodeToolbar isVisible={show} position={Position.Right}>
+      <NodeToolbar isVisible={show} position={Position.Bottom}>
         <div
           ref={toolbarRef}
-          className="rounded-xl border ml-16 border-white/10 bg-neutral-900 text-neutral-100 shadow-xl p-2 w-64"
+          className="rounded-xl border border-white/10 bg-neutral-900 text-neutral-100 shadow-xl p-2 w-64"
         >
           <input
             autoFocus
@@ -321,7 +321,7 @@ useEffect(() => {
               )}
               <div className="col-span-3 p-6" ref={contentRef} onMouseUp={handleTextSelection}>
                 <h2
-                  className="text-xl font-semibold mb-2 select-text cursor-pointer hover:opacity-80 transition-opacity"
+                  className="text-xl font-semibold mb-2 select-text cursor-pointer"
                   onClick={(e) => {
                     // Only trigger if not selecting text
                     const selection = window.getSelection();
@@ -359,8 +359,8 @@ useEffect(() => {
           )}
         </div>
 
-        <Handle type="source" position={Position.Right} id="r" />
-        {!data.isRoot && <Handle type="target" position={Position.Left} id="l" />}
+        <Handle type="source" position={Position.Bottom} id="b" />
+        {!data.isRoot && <Handle type="target" position={Position.Top} id="t" />}
 
         {/* Selection popup - positioned relative to node */}
         {selectionPopup && (
@@ -413,8 +413,8 @@ useEffect(() => {
         {!data.isLoading && !data.isRoot && (
           <div
             onClick={() => setShow(!show)}
-            className="absolute top-1/2 -mt-8 -translate-y-1/2 w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center cursor-pointer transition-colors nopan"
-            style={{ left: '100%', marginLeft: '8px' }}
+            className="absolute left-1/2 -translate-x-1/2 w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center cursor-pointer transition-colors nopan"
+            style={{ top: '100%', marginTop: '8px' }}
             title="Ask a follow-up question"
           >
             <MessageSquarePlus className="w-6 h-6" />

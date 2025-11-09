@@ -3,7 +3,7 @@ import { Node, Edge, Position } from 'reactflow';
 
 export function layoutNodes(nodes: Node[], edges: Edge[]): Node[] {
   const graph = new dagre.graphlib.Graph();
-  graph.setGraph({ rankdir: 'LR', ranksep: 180, nodesep: 90 });
+  graph.setGraph({ rankdir: 'TB', ranksep: 100, nodesep: 580 });
   graph.setDefaultEdgeLabel(() => ({}));
 
   nodes.forEach((n) => {
@@ -52,8 +52,8 @@ export function layoutNodes(nodes: Node[], edges: Edge[]): Node[] {
         x: nodeWithPosition.x - width / 2,
         y: nodeWithPosition.y - height / 2
       },
-      sourcePosition: Position.Right,
-      targetPosition: Position.Left,
+      sourcePosition: Position.Bottom,
+      targetPosition: Position.Top,
     };
   });
 }
