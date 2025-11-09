@@ -84,7 +84,7 @@ async def generate_endpoint(request: GenerateRequest):
             """
 You are an AI assistant designed for exploratory, mind-map-style conversations.
 
-Your purpose is to help users dive deep into topics by producing compact, information-dense overviews that naturally open new rabbit holes. Each answer should feel like a “knowledge node” — self-contained yet full of threads to pull on.
+Your purpose is to help users dive deep into topics by producing compact, information-dense overviews that naturally open new rabbit holes. Each answer should feel like a "knowledge node" — self-contained yet full of threads to pull on.
 
 **Output format**
 - Start with a short, bolded title (≤10 words).
@@ -103,7 +103,7 @@ Your purpose is to help users dive deep into topics by producing compact, inform
 - Do not use a fixed word limit — adapt length to convey the essence vividly.
 - Never show internal reasoning or chain of thought.
 - Stay neutral, factual, and current (use web sources if needed).
-- Each response should make the user curious to ask “why,” “how,” or “what next.”
+- Each response should make the user curious to ask "why," "how," or "what next."
 
 In short: every answer should read like a compact, high-signal exploration node — insightful on its own, but begging for the next branch.
 
@@ -169,7 +169,6 @@ async def automode_endpoint(request: AutoModeRequest):
             cache_key = get_node_cache_key(node_id, node_text)
             if cache_key in node_embedding_cache:
                 node_embedding = node_embedding_cache[cache_key]
-                logger.info(f"Using cached embedding for node {node_id}")
             else:
                 # Get embedding for this node
                 node_embedding_response = client.embeddings.create(
@@ -179,7 +178,6 @@ async def automode_endpoint(request: AutoModeRequest):
                 node_embedding = np.array(node_embedding_response.data[0].embedding)
                 # Store in cache
                 node_embedding_cache[cache_key] = node_embedding
-                logger.info(f"Cached new embedding for node {node_id}")
 
             # Calculate cosine similarity
             similarity = np.dot(query_embedding, node_embedding) / (
@@ -193,6 +191,10 @@ async def automode_endpoint(request: AutoModeRequest):
         
         if best_node_id is None:
             raise HTTPException(status_code=400, detail="No nodes provided")
+        
+        # Get the best node title for logging
+        best_node_title = request.nodes[best_node_id].title
+        logger.info(f"🔍 SEARCH: '{request.query}' → '{best_node_title}' (similarity: {best_similarity:.3f})")
         
         return {
             "node_id": best_node_id,
@@ -213,17 +215,28 @@ async def cluster_endpoint(request: ClusterRequest):
         node_ids = []
         embeddings = []
         node_texts = {}
+        cache_hits = 0
+        cache_misses = 0
         
+        # Create embeddings (using cache)
         for node_id, node in request.context.items():
             node_query = node.query if node.query else ""
             node_text = f"{node_query} {node.title} {node.content}".strip()
             node_texts[node_id] = node_text
             
-            embedding_response = client.embeddings.create(
-                model="text-embedding-3-small",
-                input=node_text
-            )
-            embedding = np.array(embedding_response.data[0].embedding)
+            # Check cache first
+            cache_key = get_node_cache_key(node_id, node_text)
+            if cache_key in node_embedding_cache:
+                embedding = node_embedding_cache[cache_key]
+                cache_hits += 1
+            else:
+                embedding_response = client.embeddings.create(
+                    model="text-embedding-3-small",
+                    input=node_text
+                )
+                embedding = np.array(embedding_response.data[0].embedding)
+                node_embedding_cache[cache_key] = embedding
+                cache_misses += 1
             
             node_ids.append(node_id)
             embeddings.append(embedding)
@@ -235,6 +248,7 @@ async def cluster_endpoint(request: ClusterRequest):
         
         # Step 2: Determine optimal number of clusters using elbow method
         n_nodes = len(node_ids)
+        
         if n_nodes <= 2:
             n_clusters = n_nodes
         else:
@@ -261,9 +275,8 @@ async def cluster_endpoint(request: ClusterRequest):
                 for i in range(1, len(inertias) - 1):
                     point = np.array([k_range[i], inertias[i]])
                     point_vec = point - first_point
-                    # Distance from point to line = |(point - first) × line_vec| / |line_vec|
-                    cross_product = np.abs(np.cross(point_vec, line_vec))
-                    dist = cross_product / line_norm if line_norm > 0 else 0
+                    # Distance from point to line (using manual calculation to avoid NumPy warning)
+                    dist = abs(point_vec[0] * line_vec[1] - point_vec[1] * line_vec[0]) / line_norm if line_norm > 0 else 0
                     
                     if dist > max_dist:
                         max_dist = dist
@@ -284,10 +297,11 @@ async def cluster_endpoint(request: ClusterRequest):
                 clusters[cluster_id] = []
             clusters[cluster_id].append(node_ids[idx])
         
-        result = {}        
+        result = {}
         for cluster_id, node_id_list in clusters.items():
             cluster_texts = [node_texts[node_id] for node_id in node_id_list]
-            combined_text = "\n\n".join(cluster_texts)            
+            combined_text = "\n\n".join(cluster_texts)
+            
             title_prompt = (
                 f"Based on the following collection of related text snippets, "
                 f"generate a short, descriptive title (maximum 5 words) that summarizes the main theme or topic:\n\n"
@@ -305,6 +319,26 @@ async def cluster_endpoint(request: ClusterRequest):
             cluster_title = title_response.choices[0].message.content.strip()
             cluster_title = cluster_title.strip('"').strip("'")
             result[cluster_title] = node_id_list
+        
+        # Concise summary log with clear formatting
+        logger.info(f"\n{'='*60}")
+        logger.info(f"🧩 CLUSTERING COMPLETE")
+        logger.info(f"   Total Nodes: {n_nodes} | Clusters: {n_clusters} | Quality (inertia): {kmeans.inertia_:.2f}")
+        logger.info(f"   Cache: {cache_hits} hits, {cache_misses} new ({cache_hits*100//n_nodes if n_nodes > 0 else 0}% cached)")
+        logger.info(f"\n📊 CLUSTER BREAKDOWN:")
+        for idx, (cluster_title, node_id_list) in enumerate(result.items(), 1):
+            node_titles = [request.context[nid].title for nid in node_id_list]
+            logger.info(f"\n   [{idx}] {cluster_title}")
+            logger.info(f"       Size: {len(node_id_list)} nodes")
+            # Show first 3 nodes, then "and X more" if there are more
+            if len(node_titles) <= 3:
+                for title in node_titles:
+                    logger.info(f"       • {title}")
+            else:
+                for title in node_titles[:3]:
+                    logger.info(f"       • {title}")
+                logger.info(f"       • ... and {len(node_titles) - 3} more")
+        logger.info(f"{'='*60}\n")
         
         return result
         

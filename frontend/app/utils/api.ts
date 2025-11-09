@@ -105,3 +105,33 @@ export async function autoMode(
   }
 }
 
+export interface ClusterResult {
+  [clusterTitle: string]: string[]; // cluster title -> array of node IDs
+}
+
+export async function clusterNodes(
+  nodes: Record<string, NodeContext>
+): Promise<ClusterResult> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/cluster`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        context: nodes,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Cluster request failed: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Failed to cluster nodes:', error);
+    throw error;
+  }
+}
+

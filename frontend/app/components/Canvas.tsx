@@ -24,7 +24,7 @@ import { FloatingChat } from './FloatingChat';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
 import { applyRadialLayout } from '../utils/layout-elk';
-import { generateContent, NodeContext, autoMode, Subtopic } from '../utils/api';
+import { generateContent, NodeContext, autoMode, Subtopic, clusterNodes, ClusterResult } from '../utils/api';
 import { calculateSubtopicDimensions } from '../utils/subtopic-sizing';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 
@@ -38,6 +38,7 @@ interface CanvasContextType {
   selectedNodeId: string | null;
   isChatPanelOpen: boolean;
   edges: Edge[];
+  clusterData: ClusterResult | null;
 }
 
 const CanvasContext = createContext<CanvasContextType | null>(null);
@@ -99,6 +100,7 @@ export default function Canvas() {
   const saveTimeoutRef = useRef<NodeJS.Timeout>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [isChatPanelOpen, setIsChatPanelOpen] = useState(false);
+  const [clusterData, setClusterData] = useState<ClusterResult | null>(null);
 
   // Helper function to build path from root to a given node
   const buildPath = useCallback((targetNodeId: string, currentEdges: Edge[]): string[] => {
@@ -314,6 +316,30 @@ export default function Canvas() {
               }
             : n
         );
+        
+        // Run clustering on all nodes (including the newly updated one)
+        const allNodesContext: Record<string, NodeContext> = {};
+        updatedNodes.forEach((node) => {
+          if (!node.data?.isRoot && node.data?.title && node.data?.body) {
+            allNodesContext[node.id] = {
+              id: node.id,
+              title: node.data.title,
+              content: node.data.body,
+            };
+          }
+        });
+        
+        // Call clustering asynchronously (don't block the UI)
+        if (Object.keys(allNodesContext).length > 1) {
+          clusterNodes(allNodesContext)
+            .then((clusters) => {
+              setClusterData(clusters);
+            })
+            .catch((error) => {
+              console.error('Clustering failed:', error);
+            });
+        }
+        
         return updatedNodes;
       });
         
@@ -400,15 +426,21 @@ export default function Canvas() {
         }
       }
 
-      // Find the best matching node using auto mode
-      const result = await autoMode(query, context);
+      // Run both semantic search and clustering in parallel
+      const [autoModeResult, clusters] = await Promise.all([
+        autoMode(query, context),
+        clusterNodes(context)
+      ]);
+
+      // Store cluster data (logs are in backend)
+      setClusterData(clusters);
 
       // Highlight and select the matched node
-      setSelectedNodeId(result.node_id);
+      setSelectedNodeId(autoModeResult.node_id);
       setIsChatPanelOpen(true);
 
       // Add a new note as a child of the matched node
-      await handleAddNote(result.node_id, query);
+      await handleAddNote(autoModeResult.node_id, query);
 
     } catch (error) {
       console.error('Failed to process floating chat query:', error);
@@ -425,8 +457,9 @@ export default function Canvas() {
       selectedNodeId,
       isChatPanelOpen,
       edges,
+      clusterData,
     }),
-    [handleAddNote, handleNodeClick, activePathNodeIds, selectedNodeId, isChatPanelOpen, edges]
+    [handleAddNote, handleNodeClick, activePathNodeIds, selectedNodeId, isChatPanelOpen, edges, clusterData]
   );
 
   // Generate session name from first edge label (initial query)
