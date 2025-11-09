@@ -6,22 +6,42 @@ import { MessageSquarePlus, ExternalLink } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+// Color palette for highlights, edges, and nodes
+const COLOR_PALETTE = [
+  '#60A5FA', // blue
+  '#34D399', // green
+  '#A78BFA', // purple
+  '#FB923C', // orange
+  '#F472B6', // pink
+  '#2DD4BF', // teal
+  '#FBBF24', // yellow
+  '#F87171', // red
+];
+
 export interface CardNodeData {
   title: string;
   body: string;
   image?: string;
   isLoading?: boolean;
   isRoot?: boolean;
+  color?: string;
 }
 
 interface CardNodeComponentProps extends NodeProps<CardNodeData> {
-  onAddNote?: (sourceId: string, text: string) => void;
+  onAddNote?: (sourceId: string, text: string, color?: string) => void;
+}
+
+interface PersistentHighlight {
+  range: Range;
+  color: string;
+  nodeId: string;
 }
 
 export function CardNode({ data, id, onAddNote }: CardNodeComponentProps) {
   const [show, setShow] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
-  const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string; range: Range } | null>(null);
+  const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string; range: Range; color: string } | null>(null);
+  const [persistentHighlights, setPersistentHighlights] = useState<PersistentHighlight[]>([]);
   const selectionPopupRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
@@ -57,16 +77,21 @@ useEffect(() => {
           const x = (rect.left - nodeRect.left) / zoom + rect.width / (2 * zoom);
           const y = (rect.top - nodeRect.top) / zoom;
 
+          // Pick a random color for this selection
+          const color = COLOR_PALETTE[Math.floor(Math.random() * COLOR_PALETTE.length)];
+
           console.log('Zoom:', zoom);
           console.log('Selection rect:', { left: rect.left, top: rect.top, width: rect.width });
           console.log('Node rect:', { left: nodeRect.left, top: nodeRect.top });
           console.log('Calculated position:', { x, y });
+          console.log('Selected color:', color);
 
           setSelectionPopup({
             x,
             y,
             text: selectedText,
             range: range.cloneRange(), // Clone to preserve the range
+            color,
           });
           console.log('Popup set!');
         }
@@ -74,23 +99,46 @@ useEffect(() => {
     }, 10);
   };
 
-  // Create custom highlight for selected text
+  // Create custom highlights for selected text (both temporary and persistent)
   useEffect(() => {
-    if (selectionPopup?.range && typeof CSS !== 'undefined' && CSS.highlights) {
+    if (typeof CSS !== 'undefined' && CSS.highlights) {
       try {
-        // Create a highlight using the CSS Custom Highlight API
-        const highlight = new Highlight(selectionPopup.range);
-        CSS.highlights.set('text-selection-highlight', highlight);
+        // Clear only this component's highlights (using node id)
+        CSS.highlights.delete(`temp-highlight-${id}`);
 
+        // Clear old persistent highlights for this node
+        let i = 0;
+        while (CSS.highlights.has(`persistent-highlight-${id}-${i}`)) {
+          CSS.highlights.delete(`persistent-highlight-${id}-${i}`);
+          i++;
+        }
+
+        // Add temporary selection highlight for this node
+        if (selectionPopup?.range) {
+          const highlight = new Highlight(selectionPopup.range);
+          CSS.highlights.set(`temp-highlight-${id}`, highlight);
+        }
+
+        // Add all persistent highlights for this node
+        persistentHighlights.forEach((h, index) => {
+          const highlight = new Highlight(h.range);
+          CSS.highlights.set(`persistent-highlight-${id}-${index}`, highlight);
+        });
+
+        // Cleanup on unmount
         return () => {
-          // Clean up the highlight when popup closes
-          CSS.highlights.delete('text-selection-highlight');
+          CSS.highlights.delete(`temp-highlight-${id}`);
+          let i = 0;
+          while (CSS.highlights.has(`persistent-highlight-${id}-${i}`)) {
+            CSS.highlights.delete(`persistent-highlight-${id}-${i}`);
+            i++;
+          }
         };
       } catch (e) {
         console.log('Highlight API not supported', e);
       }
     }
-  }, [selectionPopup]);
+  }, [selectionPopup, persistentHighlights, id]);
 
   // Handle click outside to close the input and selection popup
   useEffect(() => {
@@ -116,6 +164,24 @@ useEffect(() => {
 
   return (
     <>
+      {/* Dynamic CSS for highlights with their colors */}
+      <style dangerouslySetInnerHTML={{
+        __html: `
+          ${selectionPopup ? `
+            ::highlight(temp-highlight-${id}) {
+              background-color: ${selectionPopup.color}40;
+              color: inherit;
+            }
+          ` : ''}
+          ${persistentHighlights.map((h, index) => `
+            ::highlight(persistent-highlight-${id}-${index}) {
+              background-color: ${h.color}40;
+              color: inherit;
+            }
+          `).join('\n')}
+        `
+      }} />
+
       <NodeToolbar isVisible={show} position={Position.Right}>
         <div
           ref={toolbarRef}
@@ -138,8 +204,11 @@ useEffect(() => {
 
       <div
         ref={nodeRef}
-        className="cursor-default nopan relative rounded-3xl border border-white/10 bg-neutral-900/90 text-neutral-100 shadow-2xl overflow-hidden"
-        style={{ width: 400 }}
+        className="cursor-default nopan relative rounded-3xl border-2 bg-neutral-900/90 text-neutral-100 shadow-2xl overflow-hidden"
+        style={{
+          width: 400,
+          borderColor: data.color || 'rgba(255, 255, 255, 0.1)',
+        }}
       >
         <div className="flex flex-col gap-2 min-h-full">
           {data.isRoot ? (
@@ -230,10 +299,23 @@ useEffect(() => {
               placeholder="question"
               className="w-full rounded-lg bg-transparent px-2 py-1 text-sm outline-none"
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && e.currentTarget.value.trim()) {
+                if (e.key === 'Enter' && e.currentTarget.value.trim() && selectionPopup) {
                   const query = `${e.currentTarget.value.trim()}${selectionPopup.text ? ` (user selected the following text: "${selectionPopup.text}" and is asking about it)` : ''}`;
                   console.log("query: ", query);
-                  onAddNote?.(id, query);
+
+                  // Generate a unique node ID for this new node
+                  const newNodeId = `node-${Date.now()}`;
+
+                  // Add to persistent highlights
+                  setPersistentHighlights(prev => [...prev, {
+                    range: selectionPopup.range,
+                    color: selectionPopup.color,
+                    nodeId: newNodeId,
+                  }]);
+
+                  // Call onAddNote with color
+                  onAddNote?.(id, query, selectionPopup.color);
+
                   e.currentTarget.value = '';
                   setSelectionPopup(null);
                 }

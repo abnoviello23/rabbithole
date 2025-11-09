@@ -13,6 +13,7 @@ export function CustomEdge({
   label,
   markerEnd,
   style,
+  data,
 }: EdgeProps) {
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
@@ -22,6 +23,8 @@ export function CustomEdge({
     targetY,
     targetPosition,
   });
+
+  const color = (data as any)?.color;
 
   return (
     <>
@@ -34,8 +37,9 @@ export function CustomEdge({
               transform: `translate(-50%, -50%) translate(${labelX}px,${labelY - 30}px)`,
               pointerEvents: 'all',
               maxWidth: '240px',
+              borderColor: color || 'rgba(255, 255, 255, 0.1)',
             }}
-            className="nodrag nopan bg-neutral-900 border border-white/10 px-3 py-1.5 rounded-lg text-white text-base font-medium shadow-lg whitespace-normal break-words text-center select-text cursor-text"
+            className="nodrag nopan bg-neutral-900 border-2 px-3 py-1.5 rounded-lg text-white text-base font-medium shadow-lg whitespace-normal break-words text-center select-text cursor-text"
           >
             {label}
           </div>

@@ -27,8 +27,8 @@ export default function RootLayout({
       <head>
         <style dangerouslySetInnerHTML={{
           __html: `
-            ::highlight(text-selection-highlight) {
-              background-color: rgba(59, 130, 246, 0.4);
+            ::highlight(temp-highlight) {
+              background-color: rgba(96, 165, 250, 0.4);
               color: inherit;
             }
           `

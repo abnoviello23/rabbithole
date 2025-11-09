@@ -60,7 +60,7 @@ export default function Canvas() {
     return context;
   }, []);
 
-  const handleAddNote = useCallback(async (sourceId: string, query: string) => {
+  const handleAddNote = useCallback(async (sourceId: string, query: string, color?: string) => {
     const nodeId = `node-${Date.now()}`;
     const edgeId = `edge-${Date.now()}`;
 
@@ -73,6 +73,7 @@ export default function Canvas() {
         body: '',
         image: '',
         isLoading: true,
+        color,
       },
       position: { x: 0, y: 0 },
     };
@@ -83,6 +84,9 @@ export default function Canvas() {
       target: nodeId,
       type: 'custom',
       label: query,
+      style: color ? { stroke: color, strokeWidth: 2 } : undefined,
+      markerEnd: color ? { type: MarkerType.ArrowClosed, color } : undefined,
+      data: { color },
     };
 
     // Add edge and loading node with immediate layout
@@ -119,6 +123,7 @@ export default function Canvas() {
                 data: {
                   ...content,
                   isLoading: false,
+                  color, // Preserve the color
                 },
               }
             : n
