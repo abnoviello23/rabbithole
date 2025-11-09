@@ -41,11 +41,11 @@ app.add_middleware(
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start_time = time.time()
-    
+
     try:
         response = await call_next(request)
         process_time = time.time() - start_time
-        if request.url.path == "/chat":
+        if request.url.path == "/generate":
             logger.info(f"{request.method} {request.url.path} - Status: {response.status_code} - Time: {process_time:.3f}s")
         return response
     except Exception as e:
@@ -73,65 +73,26 @@ class GenerateResponse(BaseModel):
     response: str
 
 
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-
-class ChatRequest(BaseModel):
-    message: str
-    history: list[ChatMessage] = []
-
-
-class ChatResponse(BaseModel):
-    response: str
-
-
-@app.post("/chat")
-async def chat_endpoint(request: ChatRequest):
-    start_time = time.time()
-    logger.info(f"Chat request received - Message length: {len(request.message)} chars, History length: {len(request.history)} messages")
-    
-    try:
-        # Build conversation history
-        messages = []
-        for msg in request.history:
-            messages.append({"role": msg.role, "content": msg.content})
-        
-        # Add the current user message
-        messages.append({"role": "user", "content": request.message})
-        
-        api_start_time = time.time()
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages
-        )
-        api_time = time.time() - api_start_time
-        
-        assistant_message = response.choices[0].message.content
-        total_time = time.time() - start_time
-        
-        logger.info(f"OpenAI API response received - Response length: {len(assistant_message)} chars - API time: {api_time:.3f}s - Total time: {total_time:.3f}s")
-        
-        return {
-            "response": assistant_message
-        }
-
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.post("/generate")
 async def generate_endpoint(request: GenerateRequest):
     try:
+        system_prompt = (
+            "You are an AI assistant designed for mind map-style conversations. "
+            "Keep your responses concise and focused - aim for maximum 80 words. "
+            "Remember that your answer is just one node in an interactive mind map, "
+            "and users can ask follow-up questions to dive deeper into any aspect of your response. "
+            "Be clear and informative, but don't try to cover everything at once. "
+            "Encourage exploration by hinting at related topics the user can ask about."
+        )
+
         prompt = "\n".join([f"{request.context[node_id].title}: {request.context[node_id].content}" for node_id in request.path.split("/") if node_id in request.context])
         prompt += f"\nQuery: {request.query}"
         prompt += "\nProvide a response with a title (brief summary) and a detailed response to the query."
-        
+
         response = client.beta.chat.completions.parse(
             model="gpt-4o-search-preview-2025-03-11",
             messages=[
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=GenerateResponse
