@@ -93,16 +93,19 @@ export default function Canvas() {
       // Skip root node
       if (node.data.isRoot) return;
 
-      // Find the edge that led to this node (to get the query)
+      // Find the edge that led to this node (to get the query and context)
       const incomingEdge = edges.find((e) => e.target === nodeId);
-      const query = incomingEdge?.label as string | undefined;
-      const color = (incomingEdge?.data as any)?.color;
+      const edgeData = incomingEdge?.data as any;
+      const userQuery = edgeData?.userQuery || (incomingEdge?.label as string);
+      const selectedContext = edgeData?.selectedContext;
+      const color = edgeData?.color;
 
       lineage.push({
         nodeId,
         title: node.data.title,
         body: node.data.body,
-        query,
+        userQuery,
+        selectedContext,
         color,
         isRoot: node.data.isRoot,
       });
@@ -111,7 +114,7 @@ export default function Canvas() {
     return lineage;
   }, [nodes, edges, buildPath]);
 
-  const handleAddNote = useCallback(async (sourceId: string, query: string, color?: string) => {
+  const handleAddNote = useCallback(async (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => {
     const nodeId = `node-${Date.now()}`;
     const edgeId = `edge-${Date.now()}`;
 
@@ -134,10 +137,10 @@ export default function Canvas() {
       source: sourceId,
       target: nodeId,
       type: 'custom',
-      label: query,
+      label: userQuery,
       style: color ? { stroke: color, strokeWidth: 2 } : undefined,
       markerEnd: color ? { type: MarkerType.ArrowClosed, color } : undefined,
-      data: { color },
+      data: { color, userQuery, selectedContext },
     };
 
     // Add edge and loading node with immediate layout
@@ -163,7 +166,7 @@ export default function Canvas() {
       const context = buildContext(pathIds, currentNodes);
 
       // Generate content with context
-      const content = await generateContent(query, path, context);
+      const content = await generateContent(userQuery, selectedContext, path, context);
 
       // Update node with generated content
       setNodes((ns) =>
@@ -210,10 +213,12 @@ export default function Canvas() {
           onNodeClick={handleNodeClick}
           isInActivePath={activePathNodeIds.has(props.id)}
           isSelected={props.id === selectedNodeId}
+          isChatPanelOpen={isChatPanelOpen}
+          edges={edges}
         />
       ),
     }),
-    [handleAddNote, handleNodeClick, activePathNodeIds, selectedNodeId]
+    [handleAddNote, handleNodeClick, activePathNodeIds, selectedNodeId, isChatPanelOpen, edges]
   );
 
   const edgeTypes = useMemo(
@@ -222,10 +227,11 @@ export default function Canvas() {
         <CustomEdge
           {...props}
           isInActivePath={activePathNodeIds.has(props.source) && activePathNodeIds.has(props.target)}
+          isChatPanelOpen={isChatPanelOpen}
         />
       ),
     }),
-    [activePathNodeIds]
+    [activePathNodeIds, isChatPanelOpen]
   );
 
   // Generate session name from first edge label (initial query)

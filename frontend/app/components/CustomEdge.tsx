@@ -4,6 +4,7 @@ import { BaseEdge, EdgeLabelRenderer, EdgeProps, getBezierPath } from 'reactflow
 
 interface CustomEdgeProps extends EdgeProps {
   isInActivePath?: boolean;
+  isChatPanelOpen?: boolean;
 }
 
 export function CustomEdge({
@@ -19,6 +20,7 @@ export function CustomEdge({
   style,
   data,
   isInActivePath,
+  isChatPanelOpen,
 }: CustomEdgeProps) {
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,
@@ -31,8 +33,8 @@ export function CustomEdge({
 
   const color = (data as any)?.color;
 
-  // Enhance style for active path
-  const enhancedStyle = isInActivePath
+  // Enhance style for active path only when chat panel is open
+  const enhancedStyle = (isInActivePath && isChatPanelOpen)
     ? {
         ...style,
         strokeWidth: 3,
@@ -52,8 +54,8 @@ export function CustomEdge({
               transform: `translate(-50%, -50%) translate(${labelX}px,${labelY - 30}px)`,
               pointerEvents: 'all',
               maxWidth: '240px',
-              borderColor: isInActivePath ? (color || '#60A5FA') : (color || 'rgba(255, 255, 255, 0.1)'),
-              boxShadow: isInActivePath ? `0 0 10px ${color || '#60A5FA'}40` : undefined,
+              borderColor: (isInActivePath && isChatPanelOpen) ? (color || '#60A5FA') : (color || 'rgba(255, 255, 255, 0.1)'),
+              boxShadow: (isInActivePath && isChatPanelOpen) ? `0 0 10px ${color || '#60A5FA'}40` : undefined,
             }}
             className="nodrag nopan bg-neutral-900 border-2 px-3 py-1.5 rounded-lg text-white text-base font-medium shadow-lg whitespace-normal break-words text-center select-text cursor-text"
           >

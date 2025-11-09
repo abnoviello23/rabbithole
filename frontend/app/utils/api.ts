@@ -11,7 +11,8 @@ export interface NodeContext {
 }
 
 export interface GenerateRequest {
-  query: string;
+  user_query: string;
+  selected_context?: string;
   path: string;
   context: Record<string, NodeContext>;
 }
@@ -25,7 +26,8 @@ const PLACEHOLDER_IMAGES = [
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export async function generateContent(
-  query: string,
+  userQuery: string,
+  selectedContext: string | undefined,
   path: string,
   context: Record<string, NodeContext>
 ): Promise<GeneratedContent> {
@@ -36,7 +38,8 @@ export async function generateContent(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        query,
+        user_query: userQuery,
+        selected_context: selectedContext,
         path,
         context,
       } as GenerateRequest),
@@ -49,7 +52,7 @@ export async function generateContent(
     const data = await response.json();
 
     return {
-      title: data.title || query,
+      title: data.title || userQuery,
       body: data.response || '',
       // image: PLACEHOLDER_IMAGES[Math.floor(Math.random() * PLACEHOLDER_IMAGES.length)],
     };

@@ -38,7 +38,8 @@ class Node(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    query: str
+    user_query: str
+    selected_context: str | None = None
     path: str
     context: dict[str, Node]
 
@@ -56,7 +57,8 @@ class GenerateResponse(BaseModel):
 
 @app.post("/generate")
 async def generate_endpoint(request: GenerateRequest):
-    system_prompt = (
+    try:
+        system_prompt = (
             "You are an AI assistant designed for mind map-style conversations. "
             "Keep your responses concise and focused - aim for maximum 80 words. "
             "Remember that your answer is just one node in an interactive mind map, "
@@ -64,19 +66,18 @@ async def generate_endpoint(request: GenerateRequest):
             "Be clear and informative, but don't try to cover everything at once. "
             "Encourage exploration by hinting at related topics the user can ask about."
         )
-    try:
-        # Build context prompt from path nodes
-        context_parts = []
-        path_nodes = request.path.split("/")
-        for node_id in path_nodes:
-            if node_id in request.context:
-                node = request.context[node_id]
-                context_parts.append(f"{node.title}: {node.content}")
-        
-        prompt = "\n".join(context_parts)
-        prompt += f"\n\nQuery: {request.query}"
-        prompt += "\n\nProvide a comprehensive response with a title (brief summary) and a detailed response to the query. Also provide 2 suggested follow-up questions that would help the user explore this topic further."
-        
+
+        prompt = "\n".join([f"{request.context[node_id].title}: {request.context[node_id].content}" for node_id in request.path.split("/") if node_id in request.context])
+
+        # Add query with optional selected context
+        if request.selected_context:
+            prompt += f"\n\nUser selected the following text: \"{request.selected_context}\""
+            prompt += f"\nUser's question about the selection: {request.user_query}"
+        else:
+            prompt += f"\n\nUser's question: {request.user_query}"
+
+        prompt += "\nProvide a response with a title (brief summary) and a detailed response to the query. Also provide 2 suggested follow-up questions that would help the user explore this topic further."
+
         response = client.beta.chat.completions.parse(
             model="gpt-4o-search-preview-2025-03-11",
             messages=[
@@ -87,7 +88,7 @@ async def generate_endpoint(request: GenerateRequest):
         )
 
         parsed_response = response.choices[0].message.parsed
-        
+
         return {
             "title": parsed_response.title,
             "response": parsed_response.response,

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Handle, Position, NodeProps, NodeToolbar, useReactFlow } from 'reactflow';
+import { Handle, Position, NodeProps, NodeToolbar, useReactFlow, Edge } from 'reactflow';
 import { MessageSquarePlus, ExternalLink } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -28,10 +28,12 @@ export interface CardNodeData {
 }
 
 interface CardNodeComponentProps extends NodeProps<CardNodeData> {
-  onAddNote?: (sourceId: string, text: string, color?: string) => void;
+  onAddNote?: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
   onNodeClick?: (nodeId: string) => void;
   isInActivePath?: boolean;
   isSelected?: boolean;
+  isChatPanelOpen?: boolean;
+  edges?: Edge[];
 }
 
 interface PersistentHighlight {
@@ -40,7 +42,7 @@ interface PersistentHighlight {
   nodeId: string;
 }
 
-export function CardNode({ data, id, onAddNote, onNodeClick, isInActivePath, isSelected }: CardNodeComponentProps) {
+export function CardNode({ data, id, onAddNote, onNodeClick, isInActivePath, isSelected, isChatPanelOpen, edges }: CardNodeComponentProps) {
   const [show, setShow] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string; range: Range; color: string } | null>(null);
@@ -53,6 +55,67 @@ export function CardNode({ data, id, onAddNote, onNodeClick, isInActivePath, isS
 useEffect(() => {
   console.log(">> CardNode: ", id, data);
 }, [id, data]);
+
+  // Utility function to find text in DOM and create a Range
+  const findTextRange = (searchText: string, containerNode: HTMLElement | null): Range | null => {
+    if (!containerNode || !searchText) return null;
+
+    const walker = document.createTreeWalker(
+      containerNode,
+      NodeFilter.SHOW_TEXT,
+      null
+    );
+
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      const textContent = node.textContent || '';
+      const index = textContent.indexOf(searchText);
+
+      if (index !== -1) {
+        const range = document.createRange();
+        range.setStart(node, index);
+        range.setEnd(node, index + searchText.length);
+        return range;
+      }
+    }
+
+    return null;
+  };
+
+  // Recreate highlights from edge data when component mounts or edges change
+  useEffect(() => {
+    if (!edges || !contentRef.current || data.isRoot || data.isLoading || !data.body) return;
+
+    // Small delay to ensure ReactMarkdown has rendered the content into the DOM
+    const timeoutId = setTimeout(() => {
+      // Find all outgoing edges from this node
+      const outgoingEdges = edges.filter(edge => edge.source === id);
+
+      // Recreate highlights from edges with selectedContext
+      const recreatedHighlights: PersistentHighlight[] = [];
+
+      outgoingEdges.forEach(edge => {
+        const edgeData = edge.data as any;
+        if (edgeData?.selectedContext && edgeData?.color) {
+          const range = findTextRange(edgeData.selectedContext, contentRef.current);
+          if (range) {
+            recreatedHighlights.push({
+              range: range,
+              color: edgeData.color,
+              nodeId: edge.target,
+            });
+          }
+        }
+      });
+
+      // Only update if we found highlights
+      if (recreatedHighlights.length > 0) {
+        setPersistentHighlights(recreatedHighlights);
+      }
+    }, 100); // Small delay to wait for ReactMarkdown to render
+
+    return () => clearTimeout(timeoutId);
+  }, [edges, id, data.isRoot, data.isLoading, data.body]);
 
   // Handle text selection on mouse up
   const handleTextSelection = () => {
@@ -116,13 +179,13 @@ useEffect(() => {
           i++;
         }
 
-        // Add temporary selection highlight for this node
+        // Add temporary selection highlight for this node (always shown during selection)
         if (selectionPopup?.range) {
           const highlight = new Highlight(selectionPopup.range);
           CSS.highlights.set(`temp-highlight-${id}`, highlight);
         }
 
-        // Add all persistent highlights for this node
+        // Add all persistent highlights (always shown)
         persistentHighlights.forEach((h, index) => {
           const highlight = new Highlight(h.range);
           CSS.highlights.set(`persistent-highlight-${id}-${index}`, highlight);
@@ -188,7 +251,7 @@ useEffect(() => {
       <NodeToolbar isVisible={show} position={Position.Right}>
         <div
           ref={toolbarRef}
-          className="rounded-xl border border-white/10 bg-neutral-900 text-neutral-100 shadow-xl p-2 w-64"
+          className="rounded-xl border ml-16 border-white/10 bg-neutral-900 text-neutral-100 shadow-xl p-2 w-64"
         >
           <input
             autoFocus
@@ -205,27 +268,29 @@ useEffect(() => {
         </div>
       </NodeToolbar>
 
-      <div
-        ref={nodeRef}
-        onClick={(e) => {
-          // Only trigger node click if clicking on the node itself, not text or interactive elements
-          const target = e.target as HTMLElement;
-          const isClickOnText = target.closest('.select-text, input, button, a');
-          if (!isClickOnText && onNodeClick) {
-            onNodeClick(id);
-          }
-        }}
-        className="cursor-pointer nopan relative rounded-3xl border-2 bg-neutral-900/90 text-neutral-100 shadow-2xl overflow-hidden transition-all"
-        style={{
-          width: 400,
-          borderColor: isInActivePath || isSelected ? (data.color || '#60A5FA') : 'rgba(255, 255, 255, 0.1)',
-          boxShadow: isSelected
-            ? `0 0 0 4px ${data.color || '#60A5FA'}40, 0 0 30px ${data.color || '#60A5FA'}80`
-            : isInActivePath
-            ? `0 0 0 3px ${data.color || '#60A5FA'}30, 0 0 20px ${data.color || '#60A5FA'}40`
-            : undefined,
-        }}
-      >
+      {/* Wrapper for node and external button */}
+      <div className="relative">
+        <div
+          ref={nodeRef}
+          onClick={(e) => {
+            // Only trigger node click if clicking on the node itself, not text or interactive elements
+            const target = e.target as HTMLElement;
+            const isClickOnText = target.closest('.select-text, input, button, a');
+            if (!isClickOnText && onNodeClick) {
+              onNodeClick(id);
+            }
+          }}
+          className="cursor-pointer nopan relative rounded-3xl border-2 bg-neutral-900/90 text-neutral-100 shadow-2xl overflow-hidden transition-all"
+          style={{
+            width: 400,
+            borderColor: data.color || 'rgba(255, 255, 255, 0.1)',
+            boxShadow: isSelected && isChatPanelOpen
+              ? `0 0 0 4px ${data.color || '#60A5FA'}40, 0 0 30px ${data.color || '#60A5FA'}80`
+              : isInActivePath && isChatPanelOpen
+              ? `0 0 0 3px ${data.color || '#60A5FA'}30, 0 0 20px ${data.color || '#60A5FA'}40`
+              : undefined,
+          }}
+        >
         <div className="flex flex-col gap-2 min-h-full">
           {data.isRoot ? (
             <div className="p-8 flex flex-col gap-4 justify-center flex-1">
@@ -255,7 +320,19 @@ useEffect(() => {
                 <img src={data.image} alt="" className="col-span-2 p-6 object-contain max-h-64" />
               )}
               <div className="col-span-3 p-6" ref={contentRef} onMouseUp={handleTextSelection}>
-                <h2 className="text-xl font-semibold mb-2 select-text cursor-text">{data.title}</h2>
+                <h2
+                  className="text-xl font-semibold mb-2 select-text cursor-pointer hover:opacity-80 transition-opacity"
+                  onClick={(e) => {
+                    // Only trigger if not selecting text
+                    const selection = window.getSelection();
+                    if (!selection || selection.toString().length === 0) {
+                      onNodeClick?.(id);
+                    }
+                  }}
+                  title="Click to open conversation path"
+                >
+                  {data.title}
+                </h2>
                 <div className="text-sm leading-relaxed text-neutral-300 select-text cursor-text prose prose-invert prose-sm max-w-none">
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
@@ -282,16 +359,6 @@ useEffect(() => {
           )}
         </div>
 
-        {!data.isLoading && !data.isRoot && (
-          <div
-            onClick={() => setShow(!show)}
-            className="absolute top-1/2 right-0 -translate-y-1/2 w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center cursor-pointer transition-colors"
-            title="Ask a follow-up question"
-          >
-            <MessageSquarePlus className="w-6 h-6" />
-          </div>
-        )}
-
         <Handle type="source" position={Position.Right} id="r" />
         {!data.isRoot && <Handle type="target" position={Position.Left} id="l" />}
 
@@ -316,8 +383,9 @@ useEffect(() => {
               className="w-full rounded-lg bg-transparent px-2 py-1 text-sm outline-none"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && e.currentTarget.value.trim() && selectionPopup) {
-                  const query = `${e.currentTarget.value.trim()}${selectionPopup.text ? ` (user selected the following text: "${selectionPopup.text}" and is asking about it)` : ''}`;
-                  console.log("query: ", query);
+                  const userQuery = e.currentTarget.value.trim();
+                  const selectedContext = selectionPopup.text;
+                  console.log("userQuery:", userQuery, "selectedContext:", selectedContext);
 
                   // Generate a unique node ID for this new node
                   const newNodeId = `node-${Date.now()}`;
@@ -329,14 +397,27 @@ useEffect(() => {
                     nodeId: newNodeId,
                   }]);
 
-                  // Call onAddNote with color
-                  onAddNote?.(id, query, selectionPopup.color);
+                  // Call onAddNote with separate userQuery and selectedContext
+                  onAddNote?.(id, userQuery, selectedContext, selectionPopup.color);
 
                   e.currentTarget.value = '';
                   setSelectionPopup(null);
                 }
               }}
             />
+          </div>
+        )}
+        </div>
+
+        {/* Follow-up question button - outside node */}
+        {!data.isLoading && !data.isRoot && (
+          <div
+            onClick={() => setShow(!show)}
+            className="absolute top-1/2 -mt-8 -translate-y-1/2 w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center cursor-pointer transition-colors nopan"
+            style={{ left: '100%', marginLeft: '8px' }}
+            title="Ask a follow-up question"
+          >
+            <MessageSquarePlus className="w-6 h-6" />
           </div>
         )}
       </div>
