@@ -23,9 +23,7 @@ import { ChatPanel, ChatMessage } from './ChatPanel';
 import { FloatingChat } from './FloatingChat';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
-import { applyRadialLayout } from '../utils/layout-elk';
-import { generateContent, NodeContext, autoMode, Subtopic, clusterNodes, ClusterResult, warmCache } from '../utils/api';
-import { calculateSubtopicDimensions } from '../utils/subtopic-sizing';
+import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, warmCache } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 
 const STORAGE_KEY = 'rabbithole-sessions';
@@ -171,82 +169,11 @@ export default function Canvas() {
     return lineage;
   }, [nodes, edges, buildPath]);
 
-  // Helper to check if a node is a leaf node (no children except subtopics)
-  const isLeafNode = useCallback((nodeId: string, currentEdges: Edge[], currentNodes: Node<CardNodeData>[]): boolean => {
-    const outgoingEdges = currentEdges.filter(e => e.source === nodeId);
-    const children = outgoingEdges.map(e => currentNodes.find(n => n.id === e.target)).filter(Boolean);
-    // A node is a leaf if it has no children, or all children are subtopics
-    return children.length === 0 || children.every(child => child?.data?.isSubtopic);
-  }, []);
-
-  // Helper to create subtopic nodes
-  const createSubtopicNodes = useCallback((parentId: string, subtopics: Subtopic[]): { nodes: Node<CardNodeData>[], edges: Edge[] } => {
-    const newNodes: Node<CardNodeData>[] = [];
-    const newEdges: Edge[] = [];
-
-    subtopics.forEach((subtopic, index) => {
-      const subtopicId = `${parentId}-subtopic-${index}-${Date.now()}`;
-      
-      // Calculate dimensions based on content - single source of truth
-      const dimensions = calculateSubtopicDimensions(subtopic.title, !!subtopic.category);
-      
-      newNodes.push({
-        id: subtopicId,
-        type: 'card',
-        data: {
-          title: subtopic.title,
-          body: '',
-          isSubtopic: true,
-          category: subtopic.category,
-        },
-        position: { x: 0, y: 0 }, // Will be positioned by radial layout
-        width: dimensions.width,
-        height: dimensions.height,
-      });
-
-      newEdges.push({
-        id: `edge-${parentId}-${subtopicId}`,
-        source: parentId,
-        target: subtopicId,
-        type: 'custom',
-        style: { strokeDasharray: '5,5', opacity: 0.6 },
-      });
-    });
-
-    return { nodes: newNodes, edges: newEdges };
-  }, []);
-
   const handleAddNote = useCallback(async (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => {
     const nodeId = `node-${Date.now()}`;
     const edgeId = `edge-${Date.now()}`;
 
-    let actualSourceId = sourceId;
-    const sourceNode = nodes.find(n => n.id === sourceId);
-    
-    // If source is a subtopic, connect to its parent instead and remove all sibling subtopics
-    if (sourceNode?.data?.isSubtopic) {
-      const parentEdge = edges.find(e => e.target === sourceId);
-      if (parentEdge) {
-        actualSourceId = parentEdge.source;
-        
-        // Remove all subtopic nodes and edges connected to the same parent
-        const nodesToKeep = nodes.filter(n => {
-          if (!n.data?.isSubtopic) return true;
-          const subtopicParentEdge = edges.find(e => e.target === n.id);
-          return !subtopicParentEdge || subtopicParentEdge.source !== actualSourceId;
-        });
-        const edgesToKeep = edges.filter(e => {
-          const targetNode = nodes.find(n => n.id === e.target);
-          if (!targetNode?.data?.isSubtopic) return true;
-          return !edges.some(pe => pe.target === e.target && pe.source === actualSourceId);
-        });
-        
-        setNodes(nodesToKeep);
-        setEdges(edgesToKeep);
-      }
-    }
-
-    // Create loading node (regular node, not a subtopic)
+    // Create loading node
     const loadingNode: Node<CardNodeData> = {
       id: nodeId,
       type: 'card',
@@ -262,7 +189,7 @@ export default function Canvas() {
 
     const newEdge: Edge = {
       id: edgeId,
-      source: actualSourceId, // Connect to parent if source was a subtopic
+      source: sourceId,
       target: nodeId,
       type: 'custom',
       label: userQuery,
@@ -286,8 +213,8 @@ export default function Canvas() {
 
     // Generate content with full context
     try {
-      // Build path from root to actual source node (parent if clicked from subtopic)
-      const pathIds = buildPath(actualSourceId, currentEdges);
+      // Build path from root to source node
+      const pathIds = buildPath(sourceId, currentEdges);
       const path = pathIds.join('/');
 
       // Build context from all nodes in path
@@ -342,52 +269,15 @@ export default function Canvas() {
         
         return updatedNodes;
       });
-        
-      // After content loads, check if we should add subtopics (only for leaf nodes)
-        if (content.subtopics && content.subtopics.length > 0) {
-        console.log('Subtopics received:', content.subtopics);
-        // Wait a bit for the node to update
-          setTimeout(() => {
-          // Capture current state
-          let currentNodesState: Node<CardNodeData>[] = [];
-          let currentEdgesState: Edge[] = [];
-          
-          setNodes((ns) => {
-            currentNodesState = ns;
-            return ns;
-          });
-          
-          setEdges((es) => {
-            currentEdgesState = es;
-            return es;
-          });
 
-          // Check if the new node is now a leaf node
-          const isLeaf = isLeafNode(nodeId, currentEdgesState, currentNodesState);
-          console.log('Is leaf node?', isLeaf, 'NodeID:', nodeId);
-          
-          if (isLeaf) {
-            // Create subtopic nodes
-            const { nodes: subtopicNodes, edges: subtopicEdges } = createSubtopicNodes(
-              nodeId,
-              content.subtopics!
-            );
-            
-            console.log('Created subtopic nodes:', subtopicNodes.length, 'edges:', subtopicEdges.length);
-
-            // Add subtopics - layout will be applied by useEffect
-            setNodes([...currentNodesState, ...subtopicNodes]);
-            setEdges([...currentEdgesState, ...subtopicEdges]);
-          }
-          }, 100);
-        }
+      // Subtopics are now displayed inline in the node, no need to create separate nodes
     } catch (error) {
       console.error('Failed to generate content:', error);
       // Remove loading node on error
       setNodes((ns) => ns.filter((n) => n.id !== nodeId));
       setEdges((es) => es.filter((e) => e.id !== edgeId));
     }
-  }, [setNodes, setEdges, buildPath, buildContext, nodes, edges, isLeafNode, createSubtopicNodes]);
+  }, [setNodes, setEdges, buildPath, buildContext, nodes, edges]);
 
   // Calculate active path node IDs
   const activePathNodeIds = useMemo(() => {
@@ -505,9 +395,22 @@ export default function Canvas() {
         const stored = localStorage.getItem(STORAGE_KEY);
         const allSessions: Sessions = stored ? JSON.parse(stored) : {};
 
+        // Filter out subtopic nodes before saving (they're now displayed inline)
+        const filteredNodes = currentNodes.filter(n => !n.data?.isSubtopic);
+
+        // Get IDs of subtopic nodes to filter out their edges
+        const subtopicNodeIds = new Set(
+          currentNodes.filter(n => n.data?.isSubtopic).map(n => n.id)
+        );
+
+        // Filter out edges connected to subtopic nodes
+        const filteredEdges = currentEdges.filter(
+          e => !subtopicNodeIds.has(e.source) && !subtopicNodeIds.has(e.target)
+        );
+
         allSessions[name] = {
-          nodes: currentNodes,
-          edges: currentEdges,
+          nodes: filteredNodes,
+          edges: filteredEdges,
         };
 
         localStorage.setItem(STORAGE_KEY, JSON.stringify(allSessions));
@@ -528,8 +431,21 @@ export default function Canvas() {
         const sessionData = allSessions[name];
 
         if (sessionData) {
-          setNodes(sessionData.nodes || INITIAL_NODES);
-          setEdges(sessionData.edges || INITIAL_EDGES);
+          // Filter out old subtopic nodes (they're now displayed inline)
+          const filteredNodes = (sessionData.nodes || INITIAL_NODES).filter(n => !n.data?.isSubtopic);
+
+          // Get IDs of subtopic nodes to filter out their edges
+          const subtopicNodeIds = new Set(
+            (sessionData.nodes || []).filter(n => n.data?.isSubtopic).map(n => n.id)
+          );
+
+          // Filter out edges connected to subtopic nodes
+          const filteredEdges = (sessionData.edges || INITIAL_EDGES).filter(
+            e => !subtopicNodeIds.has(e.source) && !subtopicNodeIds.has(e.target)
+          );
+
+          setNodes(filteredNodes);
+          setEdges(filteredEdges);
           setCurrentSessionName(name);
         }
       }
@@ -638,41 +554,22 @@ export default function Canvas() {
   useEffect(() => {
     const allMeasured = nodes.every((n) => n.width && n.height);
     if (allMeasured && nodes.length > 0) {
-      const applyLayouts = async () => {
-        // First apply dagre layout to regular nodes (excludes subtopics)
-        let layoutedNodes = layoutNodes(nodes, edges);
-
-        // Then apply radial layout to any subtopics around their parents
-        const parentsWithSubtopics = new Set<string>();
-        edges.forEach(edge => {
-          const targetNode = layoutedNodes.find(n => n.id === edge.target);
-          if (targetNode?.data?.isSubtopic) {
-            parentsWithSubtopics.add(edge.source);
-          }
-        });
-
-        // Apply radial layout for each parent with subtopics
-        for (const parentId of parentsWithSubtopics) {
-          layoutedNodes = await applyRadialLayout(layoutedNodes, edges, parentId);
-      }
+      const layoutedNodes = layoutNodes(nodes, edges);
 
       // Check if positions actually changed to avoid infinite loop
-        const positionsChanged = layoutedNodes.some((ln, i) => {
-          const original = nodes[i];
+      const positionsChanged = layoutedNodes.some((ln, i) => {
+        const original = nodes[i];
         if (!original) return true;
-          return Math.abs(ln.position.x - original.position.x) > 1 || 
-                          Math.abs(ln.position.y - original.position.y) > 1;
+        return Math.abs(ln.position.x - original.position.x) > 1 ||
+                        Math.abs(ln.position.y - original.position.y) > 1;
       });
 
       if (positionsChanged) {
         setNodes(layoutedNodes);
       }
-      };
-
-      applyLayouts();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes.map(n => `${n.id}:${n.width}:${n.height}:${n.data?.isLoading}:${n.data?.isSubtopic}`).join(','), edges.map(e => `${e.id}:${e.source}:${e.target}`).join(',')]);
+  }, [nodes.map(n => `${n.id}:${n.width}:${n.height}:${n.data?.isLoading}`).join(','), edges.map(e => `${e.id}:${e.source}:${e.target}`).join(',')]);
 
   return (
     <div style={{ height: '100vh', width: '100vw', background: '#0a0a0a', display: 'flex' }}>

@@ -28,6 +28,11 @@ function getCategoryColor(category: string): string {
   return COLOR_PALETTE[index];
 }
 
+export interface Subtopic {
+  title: string;
+  category: string;
+}
+
 export interface CardNodeData {
   title: string;
   body: string;
@@ -37,6 +42,8 @@ export interface CardNodeData {
   isSubtopic?: boolean;
   category?: string;
   color?: string;
+  suggestedQuestions?: string[];
+  subtopics?: Subtopic[];
 }
 
 interface CardNodeComponentProps extends NodeProps<CardNodeData> {
@@ -393,6 +400,63 @@ useEffect(() => {
                   </ReactMarkdown>
                 </div>
               </div>
+
+              {/* Subtopics List */}
+              {data.subtopics && data.subtopics.length > 0 && (
+                <div className="px-6 pb-4">
+                  <div className="border-t border-white/10 pt-4">
+                    <h3 className="text-xs font-semibold text-neutral-400 mb-3">Related Topics</h3>
+                    <div className="flex flex-wrap gap-2">
+                      {data.subtopics.map((subtopic, index) => {
+                        // Check if this subtopic has been explored (has an outgoing edge with matching title)
+                        const matchingEdge = edges?.find(edge =>
+                          edge.source === id &&
+                          (edge.label === subtopic.title || edge.data?.userQuery === subtopic.title)
+                        );
+                        const isActive = !!matchingEdge;
+                        const categoryColor = getCategoryColor(subtopic.category);
+
+                        return (
+                          <button
+                            key={index}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              // Only create a new node if this subtopic hasn't been explored yet
+                              if (!isActive) {
+                                onAddNote?.(id, subtopic.title, undefined, categoryColor);
+                              } else if (matchingEdge && onNodeClick) {
+                                // If already explored, navigate to the existing node
+                                onNodeClick(matchingEdge.target);
+                              }
+                            }}
+                            className="cursor-pointer px-3 py-1.5 rounded-lg hover:bg-white/10 hover:scale-105 border transition-all duration-200 flex items-center gap-2 group"
+                            style={{
+                              borderLeftWidth: '3px',
+                              borderLeftColor: categoryColor,
+                              borderTopColor: isActive ? categoryColor : 'rgba(255, 255, 255, 0.1)',
+                              borderRightColor: isActive ? categoryColor : 'rgba(255, 255, 255, 0.1)',
+                              borderBottomColor: isActive ? categoryColor : 'rgba(255, 255, 255, 0.1)',
+                              backgroundColor: isActive ? `${categoryColor}20` : 'rgba(255, 255, 255, 0.03)',
+                            }}
+                            title={isActive ? `View: ${subtopic.title}` : `Explore: ${subtopic.title} (${subtopic.category})`}
+                          >
+                            <span className="text-xs font-semibold text-neutral-200 group-hover:text-neutral-100 transition-colors">{subtopic.title}</span>
+                            <span
+                              className="text-[9px] px-1.5 py-0.5 rounded-full whitespace-nowrap"
+                              style={{
+                                backgroundColor: `${categoryColor}33`,
+                                color: categoryColor,
+                              }}
+                            >
+                              {subtopic.category}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
