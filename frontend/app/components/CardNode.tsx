@@ -294,7 +294,7 @@ useEffect(() => {
         <div className="flex flex-col gap-2 min-h-full">
           {data.isRoot ? (
             <div className="p-8 flex flex-col gap-4 justify-center flex-1">
-              <h2 className="text-2xl font-semibold text-center">Start Your Journey</h2>
+              <h2 className="text-2xl font-semibold text-center">What's your rabbit hole? 🐰</h2>
               <input
                 autoFocus
                 placeholder="Ask your first question..."
