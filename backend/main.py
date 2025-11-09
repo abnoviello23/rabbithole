@@ -56,6 +56,14 @@ class GenerateResponse(BaseModel):
 
 @app.post("/generate")
 async def generate_endpoint(request: GenerateRequest):
+    system_prompt = (
+            "You are an AI assistant designed for mind map-style conversations. "
+            "Keep your responses concise and focused - aim for maximum 80 words. "
+            "Remember that your answer is just one node in an interactive mind map, "
+            "and users can ask follow-up questions to dive deeper into any aspect of your response. "
+            "Be clear and informative, but don't try to cover everything at once. "
+            "Encourage exploration by hinting at related topics the user can ask about."
+        )
     try:
         # Build context prompt from path nodes
         context_parts = []
@@ -67,7 +75,7 @@ async def generate_endpoint(request: GenerateRequest):
         
         prompt = "\n".join(context_parts)
         prompt += f"\n\nQuery: {request.query}"
-        prompt += "\n\nProvide a comprehensive response with a title (brief summary) and a detailed response to the query in no longer than 50 words. Also provide 2 suggested follow-up questions that would help the user explore this topic further."
+        prompt += "\n\nProvide a comprehensive response with a title (brief summary) and a detailed response to the query. Also provide 2 suggested follow-up questions that would help the user explore this topic further."
         
         response = client.beta.chat.completions.parse(
             model="gpt-4o-search-preview-2025-03-11",
