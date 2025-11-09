@@ -11,6 +11,7 @@ import ReactFlow, {
   Node,
   Edge,
   MarkerType,
+  PanOnScrollMode,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
@@ -184,6 +185,10 @@ export default function Canvas() {
         maxZoom={4}
         nodesDraggable={false}
         elementsSelectable={true}
+        panOnScroll={true}
+        zoomOnScroll={false}
+        zoomOnPinch={true}
+        panOnScrollMode={PanOnScrollMode.Free}
         defaultEdgeOptions={{
           type: 'custom',
           style: { stroke: '#9CA3AF', strokeWidth: 2 },
