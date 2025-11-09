@@ -24,7 +24,7 @@ import { FloatingChat } from './FloatingChat';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
 import { applyRadialLayout } from '../utils/layout-elk';
-import { generateContent, NodeContext, autoMode, Subtopic, clusterNodes, ClusterResult } from '../utils/api';
+import { generateContent, NodeContext, autoMode, Subtopic, clusterNodes, ClusterResult, warmCache } from '../utils/api';
 import { calculateSubtopicDimensions } from '../utils/subtopic-sizing';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 
@@ -586,6 +586,39 @@ export default function Canvas() {
     // If no sessions, initialize with default
     setNodes(INITIAL_NODES);
   }, [setNodes, loadSessionsList, loadSession]);
+
+  // Warm cache on mount/reload if nodes exist (restores cache after backend restart)
+  const cacheWarmedRef = useRef(false);
+  useEffect(() => {
+    // Only run once, and only if we have nodes
+    if (cacheWarmedRef.current || nodes.length <= 1) return;
+    
+    // Build context for all non-root nodes
+    const allNodesContext: Record<string, NodeContext> = {};
+    nodes.forEach((node) => {
+      if (!node.data?.isRoot && node.data?.title && node.data?.body) {
+        allNodesContext[node.id] = {
+          id: node.id,
+          title: node.data.title,
+          content: node.data.body,
+        };
+      }
+    });
+
+    // Warm the cache if we have nodes
+    if (Object.keys(allNodesContext).length > 0) {
+      cacheWarmedRef.current = true; // Mark as warmed before async call
+      warmCache(allNodesContext)
+        .then((result) => {
+          if (result.new_cached > 0) {
+            console.log(`🔥 Cache warmed: ${result.new_cached} embeddings created for ${result.total_nodes} nodes`);
+          }
+        })
+        .catch((error) => {
+          console.error('Failed to warm cache:', error);
+        });
+    }
+  }, [nodes]); // Trigger when nodes change
 
   // Auto-save current session when nodes or edges change
   useEffect(() => {
