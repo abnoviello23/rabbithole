@@ -2,7 +2,7 @@
 
 ### Neo 2025 Hackathon Submission
 
-**RabbitHole** is an AI-powered visual knowledge exploration platform that transforms Q&A into interactive mind maps. Ask a question, dive deeper with follow-ups, highlight specific text for contextual queries, and watch your curiosity branch into a beautiful web of connected knowledge.
+**RabbitHole** is an AI-powered visual knowledge exploration platform that transforms Q&A into interactive mind maps. Powered by agentic search using Exa AI and MCP tools, it gathers data from any source at any granularity. Ask a question, dive deeper with follow-ups, highlight specific text for contextual queries, and watch your curiosity branch into a beautiful web of connected knowledge.
 
 ---
 
@@ -38,6 +38,13 @@
         |           |           |           |           |            |        |
    (Select &  (Trace    (Auto-    (K-Means   (Path      (Prose     (Dagre
     Query)    Paths)    Save)     Grouping)  Building)   + GFM)     Engine)
+                    |                                                 |
+            ┌───────┴───────┐                              ┌──────────┴──────────┐
+            |               |                              |                     |
+        🔍 Agentic      🌐 MCP Tools                  🧠 Claude Agent      📡 Exa AI
+        Search          (Model Context)                  SDK                  (Web Search)
+            |               |                              |                     |
+    (Exa AI + MCP)  (Any Data Source)              (Orchestration)      (Internet Access)
 ```
 
 ### Architecture Flow
@@ -46,9 +53,13 @@
 2. **Frontend Processing** → React Flow canvas renders interactive cards
 3. **Context Building** → System builds path from root to current node
 4. **API Request** → Backend receives query + full conversation context
-5. **AI Generation** → GPT-4 generates concise, focused response
-6. **Visualization** → New node appears with auto-layout
-7. **Exploration** → User can:
+5. **Agentic Search** → For deep queries, Claude Agent SDK orchestrates:
+   - Exa AI web search for comprehensive internet research
+   - MCP tools to access any data source at any granularity
+   - Multiple search iterations for thorough coverage
+6. **AI Generation** → GPT-4 synthesizes findings into concise, focused response
+7. **Visualization** → New node appears with auto-layout
+8. **Exploration** → User can:
    - Click follow-up button to ask more
    - Highlight text to ask contextual questions
    - View conversation as linear chat
@@ -65,6 +76,9 @@
 - **Dual View**: Toggle between canvas (mind map) and chat (linear conversation)
 
 ### 🤖 AI-Powered Intelligence
+- **Agentic Search**: Uses Exa AI to search the entire internet for real-time, comprehensive information
+- **MCP Tools Integration**: Access any data source through Model Context Protocol (MCP) tools
+- **Infinite Granularity**: Dive infinitely deep into any topic - no knowledge base limitations
 - **Contextual Responses**: AI understands the full conversation path
 - **Smart Content Generation**: Concise, focused answers (max 80 words)
 - **Text Highlighting**: Select any text and ask specific questions about it
@@ -100,9 +114,15 @@
 
 ### Backend
 - **Framework**: FastAPI (Python)
-- **AI/ML**: OpenAI API
-  - GPT-4o (with search preview) for content generation
-  - text-embedding-3-small for semantic search
+- **AI/ML**: 
+  - OpenAI API
+    - GPT-4o (with search preview) for content generation
+    - text-embedding-3-small for semantic search
+  - **Exa AI**: Agentic web search for comprehensive internet research
+  - **Claude Agent SDK**: For agentic search orchestration
+- **MCP Tools**: Model Context Protocol integration
+  - Exa AI MCP server for web search
+  - OpenAI summary tools for content synthesis
 - **ML Libraries**: 
   - NumPy (vector operations)
   - scikit-learn (K-means clustering)
@@ -123,6 +143,7 @@
 - **Node.js** 20+ and npm
 - **Python** 3.8+
 - **OpenAI API Key**
+- **Exa AI API Key** (for agentic search features)
 
 ### Backend Setup
 
@@ -137,8 +158,9 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Create .env file with your OpenAI key
+# Create .env file with your API keys
 echo "OPENAI_API_KEY=your-key-here" > .env
+echo "EXA_API_KEY=your-exa-key-here" >> .env
 
 # Start the server
 python main.py
@@ -164,6 +186,7 @@ npm run dev
 **Backend** (`.env` in `backend/`):
 ```env
 OPENAI_API_KEY=sk-...
+EXA_API_KEY=your-exa-api-key
 ```
 
 **Frontend** (optional, `.env.local` in `frontend/`):
@@ -199,6 +222,9 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ### Advanced Tips
 
+- **Agentic Search**: When you ask deep questions, the system uses Exa AI to search the internet and gather information from any source at any level of detail
+- **MCP Tools**: The platform leverages Model Context Protocol tools to access diverse data sources beyond traditional knowledge bases
+- **Infinite Depth**: Unlike static knowledge bases, you can explore topics to any level of granularity - from high-level concepts to specific technical details
 - **Color Coding**: Each highlighted text question gets a random color - both the edge and the resulting node use this color
 - **Active Path**: When viewing chat, the selected path glows on the canvas
 - **Context Awareness**: The AI always has access to the full path from root to current node
@@ -287,8 +313,9 @@ Cluster nodes by semantic similarity and generate titles
 rabbithole/
 ├── backend/
 │   ├── main.py              # FastAPI server + endpoints
-│   ├── requirements.txt     # Python dependencies
-│   └── .env                 # OpenAI API key
+│   ├── agent.py             # Agentic search with Exa AI & MCP tools
+│   ├── requirements.txt      # Python dependencies
+│   └── .env                 # API keys (OpenAI, Exa AI)
 │
 ├── frontend/
 │   ├── app/
@@ -317,12 +344,16 @@ rabbithole/
 ## 🎯 Neo 2025 Hackathon Highlights
 
 ### Innovation
+- **Agentic Search Architecture**: First-of-its-kind integration of Exa AI and MCP tools for unlimited knowledge exploration
+- **Infinite Granularity**: Access any data source at any level of detail - no knowledge base boundaries
 - **Novel UI Pattern**: Transforms traditional chat into explorable mind maps
 - **Context-Aware AI**: Full conversation history passed to model
 - **Visual Memory**: Color-coded highlights show what you've explored
 - **Dual Modality**: Seamlessly switch between spatial and linear views
 
 ### Technical Excellence
+- **Agentic Search**: Exa AI integration for comprehensive web research
+- **MCP Tools**: Model Context Protocol enables access to any data source
 - **Smart Caching**: MD5-based embedding cache reduces API costs
 - **Semantic Search**: Vector similarity for intelligent node matching
 - **Auto-Clustering**: K-means with elbow method for optimal grouping
@@ -385,6 +416,8 @@ MIT License - feel free to use this for your own knowledge exploration!
 
 - **Neo 2025 Hackathon** for inspiring this project
 - **OpenAI** for GPT-4 and embeddings API
+- **Exa AI** for agentic web search capabilities
+- **Anthropic** for Claude Agent SDK and MCP tools
 - **ReactFlow** for the amazing graph visualization library
 - **FastAPI** for the elegant Python backend framework
 - **Dagre** for hierarchical layout algorithms
