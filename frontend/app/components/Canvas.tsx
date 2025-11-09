@@ -17,7 +17,7 @@ import 'reactflow/dist/style.css';
 import { useCallback, useEffect, useMemo } from 'react';
 import { CardNode, CardNodeData } from './CardNode';
 import { layoutNodes } from '../utils/layout';
-import { generateContent } from '../utils/mockApi';
+import { generateContent } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 
 export default function Canvas() {
