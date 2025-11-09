@@ -282,7 +282,7 @@ useEffect(() => {
           }}
           className="cursor-pointer nopan relative rounded-3xl border-2 bg-neutral-900/90 text-neutral-100 shadow-2xl overflow-hidden transition-all"
           style={{
-            width: 400,
+            width: 500,
             borderColor: data.color || 'rgba(255, 255, 255, 0.1)',
             boxShadow: isSelected && isChatPanelOpen
               ? `0 0 0 4px ${data.color || '#60A5FA'}40, 0 0 30px ${data.color || '#60A5FA'}80`
