@@ -720,6 +720,7 @@ export default function Canvas() {
         zoomOnScroll={false}
         zoomOnPinch={true}
         panOnScrollMode={PanOnScrollMode.Free}
+        panOnScrollSpeed={1}
         defaultEdgeOptions={{
           type: 'custom',
           style: { stroke: '#9CA3AF', strokeWidth: 2 },
