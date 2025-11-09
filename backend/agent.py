@@ -235,11 +235,15 @@ async def run_research_stream(
         # Ensure settings file exists
         ensure_settings_file()
 
+        # Build context string outside the f-string to avoid backslash issue
+        context_lines = [f"- {ctx.get('title', '')}: {ctx.get('content', '')}" for ctx in context.values()]
+        context_str = "\n".join(context_lines)
+
         options = ClaudeAgentOptions(
             system_prompt=f"""You are a research assistant for a mind-map exploration tool.
 The user has asked: "{query}"
 Context from their exploration path:
-{"\n".join([f"- {ctx.get('title', '')}: {ctx.get('content', '')}" for ctx in context.values()])}
+{context_str}
 Your task:
 1. Use mcp__exa__web_search_exa to research this query deeply
 2. Search multiple times with different angles if needed
