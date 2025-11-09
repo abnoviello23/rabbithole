@@ -8,6 +8,8 @@ import logging
 from pathlib import Path
 import numpy as np
 from typing import Dict
+from sklearn.cluster import KMeans
+import math
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -47,6 +49,10 @@ class GenerateRequest(BaseModel):
 class AutoModeRequest(BaseModel):
     query: str
     nodes: dict[str, Node]
+
+
+class ClusterRequest(BaseModel):
+    context: dict[str, Node]
 
 
 class GenerateResponse(BaseModel):
@@ -147,6 +153,115 @@ async def automode_endpoint(request: AutoModeRequest):
         
     except Exception as e:
         logger.error(f"Error in automode endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/cluster")
+async def cluster_endpoint(request: ClusterRequest):
+    try:
+        if not request.context:
+            raise HTTPException(status_code=400, detail="Context dictionary is empty")
+        
+        node_ids = []
+        embeddings = []
+        node_texts = {}
+        
+        for node_id, node in request.context.items():
+            node_query = node.query if node.query else ""
+            node_text = f"{node_query} {node.title} {node.content}".strip()
+            node_texts[node_id] = node_text
+            
+            embedding_response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=node_text
+            )
+            embedding = np.array(embedding_response.data[0].embedding)
+            
+            node_ids.append(node_id)
+            embeddings.append(embedding)
+        
+        if len(node_ids) == 0:
+            raise HTTPException(status_code=400, detail="No nodes to cluster")
+        
+        embeddings_array = np.array(embeddings)
+        
+        # Step 2: Determine optimal number of clusters using elbow method
+        n_nodes = len(node_ids)
+        if n_nodes <= 2:
+            n_clusters = n_nodes
+        else:
+            # Test k values from 1 to min(sqrt(n), n-1) or max 10 for efficiency
+            max_k = min(int(math.sqrt(n_nodes)) + 1, n_nodes, 10)
+            k_range = range(1, max_k + 1)
+            inertias = []
+            
+            for k in k_range:
+                kmeans_test = KMeans(n_clusters=k, random_state=42, n_init=10)
+                kmeans_test.fit(embeddings_array)
+                inertias.append(kmeans_test.inertia_)
+            
+            if len(inertias) > 2:
+                # Automated elbow method using point furthest from line connected 1st and last points
+                first_point = np.array([k_range[0], inertias[0]])
+                last_point = np.array([k_range[-1], inertias[-1]])
+                line_vec = last_point - first_point
+                line_norm = np.linalg.norm(line_vec)
+                
+                max_dist = -1
+                optimal_k_idx = 1  # Default to k=2 (index 1) if no clear elbow
+                
+                for i in range(1, len(inertias) - 1):
+                    point = np.array([k_range[i], inertias[i]])
+                    point_vec = point - first_point
+                    # Distance from point to line = |(point - first) × line_vec| / |line_vec|
+                    cross_product = np.abs(np.cross(point_vec, line_vec))
+                    dist = cross_product / line_norm if line_norm > 0 else 0
+                    
+                    if dist > max_dist:
+                        max_dist = dist
+                        optimal_k_idx = i
+                
+                n_clusters = k_range[optimal_k_idx]
+            else:
+                # If we can't compute elbow (too few k values tested), use k=1
+                n_clusters = 1
+        
+        # clustering with optimal k value!
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        cluster_labels = kmeans.fit_predict(embeddings_array)
+        
+        clusters = {}
+        for idx, cluster_id in enumerate(cluster_labels):
+            if cluster_id not in clusters:
+                clusters[cluster_id] = []
+            clusters[cluster_id].append(node_ids[idx])
+        
+        result = {}        
+        for cluster_id, node_id_list in clusters.items():
+            cluster_texts = [node_texts[node_id] for node_id in node_id_list]
+            combined_text = "\n\n".join(cluster_texts)            
+            title_prompt = (
+                f"Based on the following collection of related text snippets, "
+                f"generate a short, descriptive title (maximum 5 words) that summarizes the main theme or topic:\n\n"
+                f"{combined_text}\n\n"
+                f"Title:"
+            )
+            title_response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that generates concise, descriptive titles."},
+                    {"role": "user", "content": title_prompt}
+                ],
+                max_tokens=20
+            )
+            cluster_title = title_response.choices[0].message.content.strip()
+            cluster_title = cluster_title.strip('"').strip("'")
+            result[cluster_title] = node_id_list
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in cluster endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
