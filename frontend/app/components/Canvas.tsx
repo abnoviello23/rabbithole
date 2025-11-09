@@ -137,7 +137,7 @@ export default function Canvas() {
       source: sourceId,
       target: nodeId,
       type: 'custom',
-      label: `> ${userQuery}`,
+      label: userQuery,
       style: color ? { stroke: color, strokeWidth: 2 } : undefined,
       markerEnd: color ? { type: MarkerType.ArrowClosed, color } : undefined,
       data: { color, userQuery, selectedContext },
