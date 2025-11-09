@@ -1,7 +1,13 @@
+export interface Subtopic {
+  title: string;
+  category: string;
+}
+
 export interface GeneratedContent {
   title: string;
   body: string;
   image?: string;
+  subtopics?: Subtopic[];
 }
 
 export interface NodeContext {
@@ -54,6 +60,7 @@ export async function generateContent(
     return {
       title: data.title || userQuery,
       body: data.response || '',
+      subtopics: data.subtopics || [],
       // image: PLACEHOLDER_IMAGES[Math.floor(Math.random() * PLACEHOLDER_IMAGES.length)],
     };
   } catch (error) {

@@ -18,12 +18,24 @@ const COLOR_PALETTE = [
   '#F87171', // red
 ];
 
+// Get consistent color for a category (hash-based)
+function getCategoryColor(category: string): string {
+  let hash = 0;
+  for (let i = 0; i < category.length; i++) {
+    hash = category.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const index = Math.abs(hash) % COLOR_PALETTE.length;
+  return COLOR_PALETTE[index];
+}
+
 export interface CardNodeData {
   title: string;
   body: string;
   image?: string;
   isLoading?: boolean;
   isRoot?: boolean;
+  isSubtopic?: boolean;
+  category?: string;
   color?: string;
 }
 
@@ -282,7 +294,7 @@ useEffect(() => {
           }}
           className="cursor-pointer nopan relative rounded-3xl border-2 bg-neutral-900/90 text-neutral-100 shadow-2xl overflow-hidden transition-all"
           style={{
-            width: 500,
+            width: data.isSubtopic ? undefined : 500, // Subtopics use their calculated width, regular nodes use 500px
             borderColor: data.color || 'rgba(255, 255, 255, 0.1)',
             boxShadow: isSelected && isChatPanelOpen
               ? `0 0 0 4px ${data.color || '#60A5FA'}40, 0 0 30px ${data.color || '#60A5FA'}80`
@@ -306,6 +318,32 @@ useEffect(() => {
                   }
                 }}
               />
+            </div>
+          ) : data.isSubtopic ? (
+            <div 
+              className="p-1.5 flex flex-col items-center justify-center h-full w-full cursor-pointer hover:bg-white/5 transition-colors overflow-hidden"
+              style={{
+                borderLeft: data.category ? `2px solid ${getCategoryColor(data.category)}` : undefined,
+              }}
+              onClick={() => {
+                if (onAddNote) {
+                  onAddNote(id, data.title);
+                }
+              }}
+              title={`Explore: ${data.title}${data.category ? ` (${data.category})` : ''}`}
+            >
+              <h3 className="text-[10px] font-semibold text-center select-text leading-tight px-0.5 wrap-break-word max-w-full">{data.title}</h3>
+              {data.category && (
+                <span 
+                  className="text-[9px] mt-0.5 px-1 py-0.5 rounded-full whitespace-nowrap"
+                  style={{ 
+                    backgroundColor: `${getCategoryColor(data.category)}33`,
+                    color: getCategoryColor(data.category),
+                  }}
+                >
+                  {data.category}
+                </span>
+              )}
             </div>
           ) : data.isLoading ? (
             <div className="p-6 flex items-center justify-center flex-1">
@@ -410,7 +448,7 @@ useEffect(() => {
         </div>
 
         {/* Follow-up question button - outside node */}
-        {!data.isLoading && !data.isRoot && (
+        {!data.isLoading && !data.isRoot && !data.isSubtopic && (
           <div
             onClick={() => setShow(!show)}
             className="absolute left-1/2 -translate-x-1/2 w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center cursor-pointer transition-colors nopan"

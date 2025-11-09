@@ -15,7 +15,7 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
-import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef, createContext, useContext } from 'react';
 import { CardNode, CardNodeData } from './CardNode';
 import { CustomEdge } from './CustomEdge';
 import { SessionManager } from './SessionManager';
@@ -23,10 +23,64 @@ import { ChatPanel, ChatMessage } from './ChatPanel';
 import { FloatingChat } from './FloatingChat';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
-import { generateContent, NodeContext, autoMode } from '../utils/api';
+import { applyRadialLayout } from '../utils/layout-elk';
+import { generateContent, NodeContext, autoMode, Subtopic } from '../utils/api';
+import { calculateSubtopicDimensions } from '../utils/subtopic-sizing';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 
 const STORAGE_KEY = 'rabbithole-sessions';
+
+// Create context for dynamic props
+interface CanvasContextType {
+  onAddNote: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
+  onNodeClick: (nodeId: string) => void;
+  activePathNodeIds: Set<string>;
+  selectedNodeId: string | null;
+  isChatPanelOpen: boolean;
+  edges: Edge[];
+}
+
+const CanvasContext = createContext<CanvasContextType | null>(null);
+
+// Wrapper components that use context
+function CardNodeWrapper(props: any) {
+  const context = useContext(CanvasContext);
+  if (!context) return null;
+  
+  return (
+    <CardNode
+      {...props}
+      onAddNote={context.onAddNote}
+      onNodeClick={context.onNodeClick}
+      isInActivePath={context.activePathNodeIds.has(props.id)}
+      isSelected={props.id === context.selectedNodeId}
+      isChatPanelOpen={context.isChatPanelOpen}
+      edges={context.edges}
+    />
+  );
+}
+
+function CustomEdgeWrapper(props: any) {
+  const context = useContext(CanvasContext);
+  if (!context) return null;
+  
+  return (
+    <CustomEdge
+      {...props}
+      isInActivePath={context.activePathNodeIds.has(props.source) && context.activePathNodeIds.has(props.target)}
+      isChatPanelOpen={context.isChatPanelOpen}
+    />
+  );
+}
+
+// Define node and edge types OUTSIDE the component
+const nodeTypes = {
+  card: CardNodeWrapper,
+};
+
+const edgeTypes = {
+  custom: CustomEdgeWrapper,
+};
 
 interface SessionData {
   nodes: Node<CardNodeData>[];
@@ -115,11 +169,82 @@ export default function Canvas() {
     return lineage;
   }, [nodes, edges, buildPath]);
 
+  // Helper to check if a node is a leaf node (no children except subtopics)
+  const isLeafNode = useCallback((nodeId: string, currentEdges: Edge[], currentNodes: Node<CardNodeData>[]): boolean => {
+    const outgoingEdges = currentEdges.filter(e => e.source === nodeId);
+    const children = outgoingEdges.map(e => currentNodes.find(n => n.id === e.target)).filter(Boolean);
+    // A node is a leaf if it has no children, or all children are subtopics
+    return children.length === 0 || children.every(child => child?.data?.isSubtopic);
+  }, []);
+
+  // Helper to create subtopic nodes
+  const createSubtopicNodes = useCallback((parentId: string, subtopics: Subtopic[]): { nodes: Node<CardNodeData>[], edges: Edge[] } => {
+    const newNodes: Node<CardNodeData>[] = [];
+    const newEdges: Edge[] = [];
+
+    subtopics.forEach((subtopic, index) => {
+      const subtopicId = `${parentId}-subtopic-${index}-${Date.now()}`;
+      
+      // Calculate dimensions based on content - single source of truth
+      const dimensions = calculateSubtopicDimensions(subtopic.title, !!subtopic.category);
+      
+      newNodes.push({
+        id: subtopicId,
+        type: 'card',
+        data: {
+          title: subtopic.title,
+          body: '',
+          isSubtopic: true,
+          category: subtopic.category,
+        },
+        position: { x: 0, y: 0 }, // Will be positioned by radial layout
+        width: dimensions.width,
+        height: dimensions.height,
+      });
+
+      newEdges.push({
+        id: `edge-${parentId}-${subtopicId}`,
+        source: parentId,
+        target: subtopicId,
+        type: 'custom',
+        style: { strokeDasharray: '5,5', opacity: 0.6 },
+      });
+    });
+
+    return { nodes: newNodes, edges: newEdges };
+  }, []);
+
   const handleAddNote = useCallback(async (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => {
     const nodeId = `node-${Date.now()}`;
     const edgeId = `edge-${Date.now()}`;
 
-    // Create loading node
+    let actualSourceId = sourceId;
+    const sourceNode = nodes.find(n => n.id === sourceId);
+    
+    // If source is a subtopic, connect to its parent instead and remove all sibling subtopics
+    if (sourceNode?.data?.isSubtopic) {
+      const parentEdge = edges.find(e => e.target === sourceId);
+      if (parentEdge) {
+        actualSourceId = parentEdge.source;
+        
+        // Remove all subtopic nodes and edges connected to the same parent
+        const nodesToKeep = nodes.filter(n => {
+          if (!n.data?.isSubtopic) return true;
+          const subtopicParentEdge = edges.find(e => e.target === n.id);
+          return !subtopicParentEdge || subtopicParentEdge.source !== actualSourceId;
+        });
+        const edgesToKeep = edges.filter(e => {
+          const targetNode = nodes.find(n => n.id === e.target);
+          if (!targetNode?.data?.isSubtopic) return true;
+          return !edges.some(pe => pe.target === e.target && pe.source === actualSourceId);
+        });
+        
+        setNodes(nodesToKeep);
+        setEdges(edgesToKeep);
+      }
+    }
+
+    // Create loading node (regular node, not a subtopic)
     const loadingNode: Node<CardNodeData> = {
       id: nodeId,
       type: 'card',
@@ -135,7 +260,7 @@ export default function Canvas() {
 
     const newEdge: Edge = {
       id: edgeId,
-      source: sourceId,
+      source: actualSourceId, // Connect to parent if source was a subtopic
       target: nodeId,
       type: 'custom',
       label: userQuery,
@@ -159,8 +284,8 @@ export default function Canvas() {
 
     // Generate content with full context
     try {
-      // Build path from root to source node
-      const pathIds = buildPath(sourceId, currentEdges);
+      // Build path from root to actual source node (parent if clicked from subtopic)
+      const pathIds = buildPath(actualSourceId, currentEdges);
       const path = pathIds.join('/');
 
       // Build context from all nodes in path
@@ -168,10 +293,16 @@ export default function Canvas() {
 
       // Generate content with context
       const content = await generateContent(userQuery, selectedContext, path, context);
+      
+      console.log('Generated content:', { 
+        title: content.title, 
+        hasSubtopics: !!content.subtopics, 
+        subtopicsCount: content.subtopics?.length 
+      });
 
       // Update node with generated content
-      setNodes((ns) =>
-        ns.map((n) =>
+      setNodes((ns) => {
+        const updatedNodes = ns.map((n) =>
           n.id === nodeId
             ? {
                 ...n,
@@ -182,15 +313,55 @@ export default function Canvas() {
                 },
               }
             : n
-        )
-      );
+        );
+        return updatedNodes;
+      });
+        
+      // After content loads, check if we should add subtopics (only for leaf nodes)
+        if (content.subtopics && content.subtopics.length > 0) {
+        console.log('Subtopics received:', content.subtopics);
+        // Wait a bit for the node to update
+          setTimeout(() => {
+          // Capture current state
+          let currentNodesState: Node<CardNodeData>[] = [];
+          let currentEdgesState: Edge[] = [];
+          
+          setNodes((ns) => {
+            currentNodesState = ns;
+            return ns;
+          });
+          
+          setEdges((es) => {
+            currentEdgesState = es;
+            return es;
+          });
+
+          // Check if the new node is now a leaf node
+          const isLeaf = isLeafNode(nodeId, currentEdgesState, currentNodesState);
+          console.log('Is leaf node?', isLeaf, 'NodeID:', nodeId);
+          
+          if (isLeaf) {
+            // Create subtopic nodes
+            const { nodes: subtopicNodes, edges: subtopicEdges } = createSubtopicNodes(
+              nodeId,
+              content.subtopics!
+            );
+            
+            console.log('Created subtopic nodes:', subtopicNodes.length, 'edges:', subtopicEdges.length);
+
+            // Add subtopics - layout will be applied by useEffect
+            setNodes([...currentNodesState, ...subtopicNodes]);
+            setEdges([...currentEdgesState, ...subtopicEdges]);
+          }
+          }, 100);
+        }
     } catch (error) {
       console.error('Failed to generate content:', error);
       // Remove loading node on error
       setNodes((ns) => ns.filter((n) => n.id !== nodeId));
       setEdges((es) => es.filter((e) => e.id !== edgeId));
     }
-  }, [setNodes, setEdges, buildPath, buildContext]);
+  }, [setNodes, setEdges, buildPath, buildContext, nodes, edges, isLeafNode, createSubtopicNodes]);
 
   // Calculate active path node IDs
   const activePathNodeIds = useMemo(() => {
@@ -214,7 +385,7 @@ export default function Canvas() {
         if (!node.data?.isRoot && node.data?.title && node.data?.body) {
           context[node.id] = {
             id: node.id,
-            title: node.data.title,
+        title: node.data.title,
             content: node.data.body,
           };
         }
@@ -245,34 +416,17 @@ export default function Canvas() {
     }
   }, [nodes, handleAddNote]);
 
-  const nodeTypes = useMemo(
+  // Create context value with all dynamic props
+  const contextValue = useMemo(
     () => ({
-      card: (props: any) => (
-        <CardNode
-          {...props}
-          onAddNote={handleAddNote}
-          onNodeClick={handleNodeClick}
-          isInActivePath={activePathNodeIds.has(props.id)}
-          isSelected={props.id === selectedNodeId}
-          isChatPanelOpen={isChatPanelOpen}
-          edges={edges}
-        />
-      ),
+      onAddNote: handleAddNote,
+      onNodeClick: handleNodeClick,
+      activePathNodeIds,
+      selectedNodeId,
+      isChatPanelOpen,
+      edges,
     }),
     [handleAddNote, handleNodeClick, activePathNodeIds, selectedNodeId, isChatPanelOpen, edges]
-  );
-
-  const edgeTypes = useMemo(
-    () => ({
-      custom: (props: any) => (
-        <CustomEdge
-          {...props}
-          isInActivePath={activePathNodeIds.has(props.source) && activePathNodeIds.has(props.target)}
-          isChatPanelOpen={isChatPanelOpen}
-        />
-      ),
-    }),
-    [activePathNodeIds, isChatPanelOpen]
   );
 
   // Generate session name from first edge label (initial query)
@@ -418,21 +572,41 @@ export default function Canvas() {
   useEffect(() => {
     const allMeasured = nodes.every((n) => n.width && n.height);
     if (allMeasured && nodes.length > 0) {
-      // Re-layout with current dimensions
-      const layoutedNodes = layoutNodes(nodes, edges);
+      const applyLayouts = async () => {
+        // First apply dagre layout to regular nodes (excludes subtopics)
+        let layoutedNodes = layoutNodes(nodes, edges);
+
+        // Then apply radial layout to any subtopics around their parents
+        const parentsWithSubtopics = new Set<string>();
+        edges.forEach(edge => {
+          const targetNode = layoutedNodes.find(n => n.id === edge.target);
+          if (targetNode?.data?.isSubtopic) {
+            parentsWithSubtopics.add(edge.source);
+          }
+        });
+
+        // Apply radial layout for each parent with subtopics
+        for (const parentId of parentsWithSubtopics) {
+          layoutedNodes = await applyRadialLayout(layoutedNodes, edges, parentId);
+      }
 
       // Check if positions actually changed to avoid infinite loop
-      const positionsChanged = layoutedNodes.some((ln, i) => {
-        const original = nodes[i];
-        return ln.position.x !== original.position.x || ln.position.y !== original.position.y;
+        const positionsChanged = layoutedNodes.some((ln, i) => {
+          const original = nodes[i];
+        if (!original) return true;
+          return Math.abs(ln.position.x - original.position.x) > 1 || 
+                          Math.abs(ln.position.y - original.position.y) > 1;
       });
 
       if (positionsChanged) {
         setNodes(layoutedNodes);
       }
+      };
+
+      applyLayouts();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes.map(n => `${n.id}:${n.width}:${n.height}:${n.data?.isLoading}`).join(','), edges]);
+  }, [nodes.map(n => `${n.id}:${n.width}:${n.height}:${n.data?.isLoading}:${n.data?.isSubtopic}`).join(','), edges.map(e => `${e.id}:${e.source}:${e.target}`).join(',')]);
 
   return (
     <div style={{ height: '100vh', width: '100vw', background: '#0a0a0a', display: 'flex' }}>
@@ -463,34 +637,36 @@ export default function Canvas() {
         </button>
 
         <div style={{ width: '100%', height: '100%' }}>
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={(c) => setEdges((es) => addEdge({ ...c, type: 'custom' }, es))}
-            fitView
-            fitViewOptions={{ padding: 2.25 }}
-            minZoom={0.1}
-            maxZoom={4}
-            nodesDraggable={false}
-            elementsSelectable={true}
-            panOnScroll={true}
-            zoomOnScroll={false}
-            zoomOnPinch={true}
-            panOnScrollMode={PanOnScrollMode.Free}
-            defaultEdgeOptions={{
-              type: 'custom',
-              style: { stroke: '#9CA3AF', strokeWidth: 2 },
-              markerEnd: { type: MarkerType.ArrowClosed, color: '#9CA3AF' },
-            }}
-            nodeTypes={nodeTypes}
-            edgeTypes={edgeTypes}
-          >
-            <Background variant={BackgroundVariant.Dots} gap={32} size={1} color="#2a2a2a" />
-            {/* <MiniMap pannable zoomable maskColor="rgba(0,0,0,0.6)" /> */}
-            {/* <Controls /> */}
-          </ReactFlow>
+          <CanvasContext.Provider value={contextValue}>
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onConnect={(c) => setEdges((es) => addEdge({ ...c, type: 'custom' }, es))}
+        fitView
+              fitViewOptions={{ padding: 2.25 }}
+        minZoom={0.1}
+        maxZoom={4}
+        nodesDraggable={false}
+        elementsSelectable={true}
+        panOnScroll={true}
+        zoomOnScroll={false}
+        zoomOnPinch={true}
+        panOnScrollMode={PanOnScrollMode.Free}
+        defaultEdgeOptions={{
+          type: 'custom',
+          style: { stroke: '#9CA3AF', strokeWidth: 2 },
+          markerEnd: { type: MarkerType.ArrowClosed, color: '#9CA3AF' },
+        }}
+        nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+      >
+        <Background variant={BackgroundVariant.Dots} gap={32} size={1} color="#2a2a2a" />
+              {/* <MiniMap pannable zoomable maskColor="rgba(0,0,0,0.6)" /> */}
+              {/* <Controls /> */}
+      </ReactFlow>
+          </CanvasContext.Provider>
         </div>
       </div>
 

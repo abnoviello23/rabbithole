@@ -65,10 +65,16 @@ class ClusterRequest(BaseModel):
     context: dict[str, Node]
 
 
+class Subtopic(BaseModel):
+    title: str
+    category: str
+
+
 class GenerateResponse(BaseModel):
     title: str
     response: str
     suggested_questions: list[str]  # List of 2 suggested follow-up questions
+    subtopics: list[Subtopic]  # List of 2-3 subtopics with categories
 
 
 @app.post("/generate")
@@ -113,7 +119,8 @@ In short: every answer should read like a compact, high-signal exploration node 
         else:
             prompt += f"\n\nUser's question: {request.user_query}"
 
-        prompt += "\nProvide a response with a title (brief summary) and a detailed response to the query. Also provide 2 suggested follow-up questions that would help the user explore this topic further."
+        prompt += "\nProvide a response with a title (brief summary) and a detailed (max 45 words)response to the query. Also provide 2 suggested follow-up questions that would help the user explore this topic further."
+        prompt += "\n\nAdditionally, suggest 2-3 related subtopics the user might want to explore next, grouped by category (e.g., 'Applications', 'Theory', 'History', 'Technical', 'Related Topics', etc.). Each subtopic should have a concise title (2-5 words) and a category label."
 
         response = client.beta.chat.completions.parse(
             model="gpt-4o-search-preview-2025-03-11",
@@ -129,7 +136,8 @@ In short: every answer should read like a compact, high-signal exploration node 
         return {
             "title": parsed_response.title,
             "response": parsed_response.response,
-            "suggested_questions": parsed_response.suggested_questions
+            "suggested_questions": parsed_response.suggested_questions,
+            "subtopics": [{"title": st.title, "category": st.category} for st in parsed_response.subtopics[:3]]  # Enforce max 3
         }
 
     except Exception as e:
