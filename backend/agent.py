@@ -11,15 +11,21 @@ from claude_agent_sdk import (
     ToolResultBlock,
 )
 try:
-    from tools import summary_tools_server
+    from tools import summary_tools_server, get_canvas_tools_server, set_websocket_callback, init_tree_tracker
     from cartesia import Cartesia
 except ImportError as e:
     summary_tools_server = None
+    get_canvas_tools_server = None
+    set_websocket_callback = None
+    init_tree_tracker = None
     Cartesia = None
     print(f"Error importing tools: {e}")
 except Exception as e:
     print("Error importing tools:", e)
     summary_tools_server = None
+    get_canvas_tools_server = None
+    set_websocket_callback = None
+    init_tree_tracker = None
     Cartesia = None
 from dotenv import load_dotenv
 
@@ -29,6 +35,37 @@ load_dotenv()
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _format_tree(node: dict, indent: int = 0) -> str:
+    """
+    Format a hierarchical tree structure into a readable text representation
+
+    Args:
+        node: Tree node with 'id', 'title', and 'children' fields
+        indent: Current indentation level
+
+    Returns:
+        Formatted tree string
+    """
+    if not node:
+        return ""
+
+    # Create indentation
+    prefix = "  " * indent
+    connector = "└─ " if indent > 0 else ""
+
+    # Format current node
+    title = node.get('title', 'Unknown')
+    node_id = node.get('id', '')
+    result = f"{prefix}{connector}{title} ({node_id})\n"
+
+    # Format children recursively
+    children = node.get('children', [])
+    for child in children:
+        result += _format_tree(child, indent + 1)
+
+    return result
 
 
 # Configuration
@@ -111,6 +148,74 @@ async def process_assistant_message(message: AssistantMessage, text_outputs: lis
             # Build details dict for streaming
             details = {}
 
+            # Special handling for create_node tool
+            if "create_node" in tool_name.lower() or tool_name.startswith("$create_node"):
+                logger.info(f"🎨 Intercepting create_node tool call")
+                logger.info(f"   Input: {tool_input}")
+
+                # Extract parameters
+                source_node_id = tool_input.get("source_node_id", "")
+                title = tool_input.get("title", "")
+                body = tool_input.get("body", "")
+                user_query = tool_input.get("user_query", title)
+
+                if source_node_id and title and body:
+                    # Import the tool function
+                    try:
+                        from tools import create_node_tool
+
+                        # Call it directly (it's async) - pass the callback directly
+                        result = await create_node_tool(
+                            source_node_id=source_node_id,
+                            title=title,
+                            body=body,
+                            user_query=user_query,
+                            callback=on_event  # Pass the on_event callback directly
+                        )
+                        logger.info(f"   ✅ Tool Result (JSON): {result}")
+
+                        # Parse the JSON to extract node_id and hierarchy, then send as status message
+                        # so the agent can see it in the conversation
+                        try:
+                            import json
+                            result_data = json.loads(result)
+                            if result_data.get("success") and result_data.get("node_id"):
+                                new_node_id = result_data['node_id']
+                                hierarchy = result_data.get('hierarchy')
+                                logger.info(f"   📌 New node ID available for children: {new_node_id}")
+
+                                # Build a readable tree visualization
+                                tree_text = ""
+                                if hierarchy:
+                                    tree_text = "\n\nCurrent tree structure:\n" + _format_tree(hierarchy, indent=0)
+
+                                # Send status message with the node_id and tree structure
+                                if on_event:
+                                    await on_event({
+                                        "type": "status",
+                                        "text": f"Node '{title}' created with ID: {new_node_id}. To create children under this node, use source_node_id=\"{new_node_id}\" in your next create_node call.{tree_text}"
+                                    })
+                        except Exception as e:
+                            logger.error(f"Error processing create_node result: {e}")
+                            pass
+                        details = {
+                            "source_node_id": source_node_id,
+                            "title": title,
+                            "body_preview": body[:50] + "..." if len(body) > 50 else body
+                        }
+                    except Exception as e:
+                        logger.error(f"   ❌ Failed to create node: {e}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                else:
+                    logger.warning(f"   ⚠️ Missing required parameters for create_node")
+                    logger.warning(f"      source_node_id: {source_node_id}")
+                    logger.warning(f"      title: {title}")
+                    logger.warning(f"      body: {body[:50] if body else 'MISSING'}")
+
+                print(f"    → Creating node: {title}")
+                print(f"    → Parent: {source_node_id}")
+
             # Show relevant input details based on tool type
             if tool_name == "Write":
                 file_path = tool_input.get("file_path", "")
@@ -159,7 +264,9 @@ async def process_assistant_message(message: AssistantMessage, text_outputs: lis
 
             # Stream tool event
             if on_event:
-                await on_event({"type": "tool", "name": tool_name, "details": details})
+                # Don't send create_node tool events (we already sent node_created events)
+                if "create_node" not in tool_name.lower():
+                    await on_event({"type": "tool", "name": tool_name, "details": details})
 
         # Handle ToolResultBlock - contains tool results (e.g., Exa search results with URLs)
         elif isinstance(block, ToolResultBlock):
@@ -215,40 +322,128 @@ async def run_research_stream(
     query: str,
     path: str,
     context: Dict[str, Dict[str, str]],
-    on_event: Callable[[Dict[str, Any]], Awaitable[None]]
+    on_event: Callable[[Dict[str, Any]], Awaitable[None]],
+    source_node_id: str = None
 ) -> None:
     """
     Run research agent and stream events via callback
-    
+
     Args:
         query: User's research query
         path: Path string from root to current node
         context: Context dict with node data
         on_event: Async callback for streaming events
+        source_node_id: ID of the source node (for creating child nodes)
     """
     logger.info("🤖 run_research_stream() called")
     logger.info(f"   Query: {query}")
     logger.info(f"   Path: {path}")
     logger.info(f"   Context size: {len(context)} nodes")
+    logger.info(f"   Source Node ID: {source_node_id}")
 
     try:
+        # Set up WebSocket callback for canvas tools
+        if set_websocket_callback:
+            set_websocket_callback(on_event)
+            logger.info("✅ WebSocket callback registered for canvas tools")
+
+        # Initialize tree tracker for this research session
+        if init_tree_tracker:
+            # Get the root title from context if available, otherwise use the query
+            root_title = query[:50] if len(query) > 50 else query
+            init_tree_tracker(source_node_id, root_title)
+            logger.info(f"✅ Tree tracker initialized with root: {source_node_id}")
+
         # Ensure settings file exists
         ensure_settings_file()
 
-        # Build context string outside the f-string to avoid backslash issue
-        context_lines = [f"- {ctx.get('title', '')}: {ctx.get('content', '')}" for ctx in context.values()]
-        context_str = "\n".join(context_lines)
+        # Format context with special handling for agent nodes
+        formatted_context = []
+        for ctx in context.values():
+            title = ctx.get('title', '')
+            content = ctx.get('content', '')
+            is_agent = ctx.get('isAgentNode', False)
+
+            if is_agent and ctx.get('statusUpdates'):
+                # For agent nodes, include the research process
+                status_updates = ctx.get('statusUpdates', [])
+                formatted_context.append(f"- {title} (Agent Research):\n  Final Answer: {content}\n  Research Process: {'; '.join(status_updates[:5])}")  # Limit to first 5 updates
+            else:
+                formatted_context.append(f"- {title}: {content}")
 
         options = ClaudeAgentOptions(
             system_prompt=f"""You are a research assistant for a mind-map exploration tool.
 The user has asked: "{query}"
 Context from their exploration path:
-{context_str}
+{chr(10).join(formatted_context)}
+
 Your task:
 1. Use mcp__exa__web_search_exa to research this query deeply
 2. Search multiple times with different angles if needed
 3. Synthesize your findings into a clear, concise response (max 80 words)
 4. Provide insights that encourage further exploration
+
+IMPORTANT - You have a special tool called $create_node:
+This tool lets you create nodes on the canvas. Use it when the user's query implies MULTIPLE SEPARATE ITEMS that should each get their own node.
+
+$create_node parameters:
+- source_node_id: ID of the parent node (start with "{source_node_id}")
+- title: Short title for the node (2-10 words)
+- body: Content for the node (2-4 sentences, max 80 words)
+- user_query: Question that led to this node (optional)
+
+RETURNS: JSON with:
+- success: true/false
+- node_id: The new node's ID (use this as source_node_id to create children!)
+- message: Confirmation message
+- hierarchy: Full nested tree structure showing all created nodes
+
+Example return:
+{{
+  "success": true,
+  "node_id": "node-123",
+  "message": "Created node 'PyTorch'...",
+  "hierarchy": {{
+    "id": "{source_node_id}",
+    "title": "Root Query",
+    "children": [
+      {{
+        "id": "node-123",
+        "title": "PyTorch",
+        "children": []
+      }}
+    ]
+  }}
+}}
+
+RECURSIVE TREE CREATION:
+You can create multi-level trees by using returned node_ids as parents:
+
+Example 1: "Tell me about AlphaFold and its key applications"
+1. create_node(source_node_id="{source_node_id}", title="AlphaFold", body="...")
+   → Returns: {{"node_id": "node-A"}}
+2. create_node(source_node_id="node-A", title="Drug Discovery", body="...")
+3. create_node(source_node_id="node-A", title="Protein Engineering", body="...")
+
+This creates:
+  Current Node
+    └── AlphaFold (node-A)
+          ├── Drug Discovery
+          └── Protein Engineering
+
+Example 2: "Compare 3 AI frameworks: PyTorch, TensorFlow, JAX - include their strengths"
+1. create_node(source_node_id="{source_node_id}", title="PyTorch", body="...") → {{"node_id": "node-P"}}
+2. create_node(source_node_id="node-P", title="PyTorch Strengths", body="...")
+3. create_node(source_node_id="{source_node_id}", title="TensorFlow", body="...") → {{"node_id": "node-T"}}
+4. create_node(source_node_id="node-T", title="TensorFlow Strengths", body="...")
+5. create_node(source_node_id="{source_node_id}", title="JAX", body="...") → {{"node_id": "node-J"}}
+6. create_node(source_node_id="node-J", title="JAX Strengths", body="...")
+
+When to create trees:
+- User asks about entities AND their sub-aspects (companies + their products, frameworks + their features)
+- "Tell me about X and dive into Y" (create X, then children for Y aspects)
+- Hierarchical topics (categories → items in each category)
+
 Be intellectually stimulating but conversational. Think "smart friend at a bar" clarity.""",
             permission_mode='acceptEdits',
             cwd=path_to_project,

@@ -15,6 +15,12 @@ export interface NodeContext {
   id: string;
   title: string;
   content: string;
+  // Agent metadata - includes research process for agent-generated nodes
+  statusUpdates?: string[];  // Tool calls, thoughts, research steps
+  sources?: Source[];        // Research sources with URLs
+  sourcesCount?: number;     // Number of sources researched
+  isAgentNode?: boolean;     // Flag indicating this was agent-generated
+  query?: string;            // Original query that created this node
 }
 
 export interface GenerateRequest {
@@ -144,7 +150,7 @@ export interface Source {
 }
 
 export interface AgentEvent {
-  type: 'status' | 'tool' | 'final' | 'error' | 'sources';
+  type: 'status' | 'tool' | 'final' | 'error' | 'sources' | 'node_created';
   text?: string;
   name?: string;
   details?: any;
@@ -153,6 +159,11 @@ export interface AgentEvent {
   suggested_questions?: string[];
   message?: string;
   sources?: Source[];
+  // For node_created events
+  node_id?: string;
+  source_id?: string;
+  body?: string;
+  user_query?: string;
 }
 
 export interface AgentResearchResult {

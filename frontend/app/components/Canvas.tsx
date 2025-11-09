@@ -127,16 +127,30 @@ export default function Canvas() {
   }, []);
 
   // Helper function to build context from nodes in path
-  const buildContext = useCallback((pathIds: string[], currentNodes: Node<CardNodeData>[]): Record<string, NodeContext> => {
+  const buildContext = useCallback((pathIds: string[], currentNodes: Node<CardNodeData>[], currentEdges: Edge[]): Record<string, NodeContext> => {
     const context: Record<string, NodeContext> = {};
 
     pathIds.forEach((nodeId) => {
       const node = currentNodes.find((n) => n.id === nodeId);
       if (node && node.data) {
+        // Detect if this is an agent node (has sources or sourcesCount)
+        const isAgentNode = !!(node.data.sources || node.data.sourcesCount || node.data.statusUpdates);
+
+        // Get the query from the incoming edge
+        const incomingEdge = currentEdges.find((e) => e.target === nodeId);
+        const edgeData = incomingEdge?.data as any;
+        const query = edgeData?.userQuery || (incomingEdge?.label as string);
+
         context[nodeId] = {
           id: nodeId,
           title: node.data.title,
           content: node.data.body,
+          // Include agent metadata if present
+          statusUpdates: node.data.statusUpdates,
+          sources: node.data.sources,
+          sourcesCount: node.data.sourcesCount,
+          isAgentNode,
+          query,
         };
       }
     });
@@ -228,7 +242,7 @@ export default function Canvas() {
       const path = pathIds.join('/');
 
       // Build context from all nodes in path
-      const context = buildContext(pathIds, currentNodes);
+      const context = buildContext(pathIds, currentNodes, currentEdges);
 
       // Generate content with context
       const content = await generateContent(userQuery, selectedContext, path, context);
@@ -335,6 +349,7 @@ export default function Canvas() {
     const statusMessages: string[] = ['Initializing Claude AI agent with web search capabilities...'];
     let totalSources = 0;
     const sources: Source[] = [];
+    const createdNodeIds = new Set<string>(); // Track nodes created by agent to prevent duplicates
 
     try {
       // Build path from root to source node
@@ -342,7 +357,7 @@ export default function Canvas() {
       const path = pathIds.join('/');
 
       // Build context from all nodes in path
-      const context = buildContext(pathIds, currentNodes);
+      const context = buildContext(pathIds, currentNodes, currentEdges);
 
       // Research with agent, streaming updates
       const result = await researchWithAgent(
@@ -352,8 +367,73 @@ export default function Canvas() {
         context,
         selectedContext,
         (event: AgentEvent) => {
+          // Handle node creation events from agent
+          if (event.type === 'node_created' && event.node_id && event.source_id && event.title && event.body) {
+            // Prevent duplicate creation
+            if (createdNodeIds.has(event.node_id)) {
+              console.log(`⚠️ Skipping duplicate node creation: ${event.node_id}`);
+              return;
+            }
+            createdNodeIds.add(event.node_id);
+
+            const agentNodeId = event.node_id;
+            const agentEdgeId = `edge-${Date.now()}-${Math.random()}`;
+
+            console.log(`🎨 Agent creating node: ${event.title} (${agentNodeId})`);
+
+            // Create the new node
+            const newNode: Node<CardNodeData> = {
+              id: agentNodeId,
+              type: 'card',
+              data: {
+                title: event.title,
+                body: event.body,
+                isLoading: false,
+                color: color || '#8B5CF6', // Agent nodes get purple color by default
+              },
+              position: { x: 0, y: 0 },
+            };
+
+            // Create edge from source to new node
+            const newEdge: Edge = {
+              id: agentEdgeId,
+              source: event.source_id,
+              target: agentNodeId,
+              type: 'custom',
+              label: event.user_query || event.title,
+              style: { stroke: color || '#8B5CF6', strokeWidth: 2 },
+              markerEnd: { type: MarkerType.ArrowClosed, color: color || '#8B5CF6' },
+              data: { color: color || '#8B5CF6', userQuery: event.user_query || event.title },
+            };
+
+            // Add node and edge to canvas
+            setEdges((edges) => {
+              const updatedEdges = [...edges, newEdge];
+              setNodes((ns) => {
+                const updatedNodes = [...ns, newNode];
+                return layoutNodes(updatedNodes, updatedEdges);
+              });
+              return updatedEdges;
+            });
+
+            // Log status update
+            statusMessages.push(`Created node: ${event.title}`);
+            setNodes((ns) =>
+              ns.map((n) =>
+                n.id === nodeId
+                  ? {
+                      ...n,
+                      data: {
+                        ...n.data,
+                        statusUpdates: [...statusMessages],
+                      },
+                    }
+                  : n
+              )
+            );
+          }
           // Handle streaming events
-          if (event.type === 'status' && event.text) {
+          else if (event.type === 'status' && event.text) {
             const cleanText = stripEmojis(event.text);
             if (cleanText) {
               statusMessages.push(cleanText);
