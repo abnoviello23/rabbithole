@@ -7,21 +7,12 @@ import os
 import logging
 from pathlib import Path
 import numpy as np
-from typing import Dict
 from sklearn.cluster import KMeans
 import math
-import hashlib
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Cache for node embeddings: {cache_key: embedding_array}
-node_embedding_cache: Dict[str, np.ndarray] = {}
-
-# Cache for cluster assignments: {cluster_hash: {cluster_title: [node_ids]}}
-# Hash is based on which nodes are grouped together (not cluster titles)
-cluster_cache: Dict[str, Dict[str, list[str]]] = {}
 
 # Load .env from the backend directory (where this file is located)
 env_path = Path(__file__).parent / '.env'
@@ -38,12 +29,6 @@ app.add_middleware(
 )
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-
-def get_node_cache_key(node_id: str, node_text: str) -> str:
-    """Generate a cache key based on node ID and content hash."""
-    content_hash = hashlib.md5(node_text.encode()).hexdigest()
-    return f"{node_id}:{content_hash}"
 
 
 class Node(BaseModel):
@@ -169,19 +154,12 @@ async def automode_endpoint(request: AutoModeRequest):
             node_query = node.query if node.query else node.title
             node_text = f"{node_query} {node.content}"
 
-            # Check cache first
-            cache_key = get_node_cache_key(node_id, node_text)
-            if cache_key in node_embedding_cache:
-                node_embedding = node_embedding_cache[cache_key]
-            else:
-                # Get embedding for this node
-                node_embedding_response = client.embeddings.create(
-                    model="text-embedding-3-small",
-                    input=node_text
-                )
-                node_embedding = np.array(node_embedding_response.data[0].embedding)
-                # Store in cache
-                node_embedding_cache[cache_key] = node_embedding
+            # Get embedding for this node (no caching)
+            node_embedding_response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=node_text
+            )
+            node_embedding = np.array(node_embedding_response.data[0].embedding)
 
             # Calculate cosine similarity
             similarity = np.dot(query_embedding, node_embedding) / (
@@ -219,28 +197,19 @@ async def cluster_endpoint(request: ClusterRequest):
         node_ids = []
         embeddings = []
         node_texts = {}
-        cache_hits = 0
-        cache_misses = 0
         
-        # Create embeddings (using cache)
+        # Create embeddings (no caching - always recompute)
         for node_id, node in request.context.items():
             node_query = node.query if node.query else ""
             node_text = f"{node_query} {node.title} {node.content}".strip()
             node_texts[node_id] = node_text
             
-            # Check cache first
-            cache_key = get_node_cache_key(node_id, node_text)
-            if cache_key in node_embedding_cache:
-                embedding = node_embedding_cache[cache_key]
-                cache_hits += 1
-            else:
-                embedding_response = client.embeddings.create(
-                    model="text-embedding-3-small",
-                    input=node_text
-                )
-                embedding = np.array(embedding_response.data[0].embedding)
-                node_embedding_cache[cache_key] = embedding
-                cache_misses += 1
+            # Get embedding for this node (always create new)
+            embedding_response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=node_text
+            )
+            embedding = np.array(embedding_response.data[0].embedding)
             
             node_ids.append(node_id)
             embeddings.append(embedding)
@@ -307,76 +276,53 @@ async def cluster_endpoint(request: ClusterRequest):
                 clusters[cluster_id] = []
             clusters[cluster_id].append(node_ids[idx])
         
-        # Create a deterministic hash of cluster assignments (which nodes are grouped together)
-        # Sort node IDs within each cluster and sort clusters by their sorted node IDs
-        cluster_sets = [tuple(sorted(node_list)) for node_list in clusters.values()]
-        cluster_sets_sorted = tuple(sorted(cluster_sets))
-        cluster_hash = hashlib.md5(str(cluster_sets_sorted).encode()).hexdigest()
-        
-        # Check if we have cached titles for this exact cluster configuration
-        title_cache_hit = False
-        if cluster_hash in cluster_cache:
-            # Verify the cached clusters match (node IDs are the same)
-            cached_result = cluster_cache[cluster_hash]
-            # Check if all node IDs match
-            cached_node_ids = set()
-            for node_list in cached_result.values():
-                cached_node_ids.update(node_list)
-            current_node_ids = set(node_ids)
+        # Generate titles for each cluster (always regenerate - no caching)
+        result = {}
+        for cluster_id, node_id_list in clusters.items():
+            cluster_texts = [node_texts[node_id] for node_id in node_id_list]
+            combined_text = "\n\n".join(cluster_texts)
             
-            if cached_node_ids == current_node_ids:
-                # Exact match! Reuse cached titles
-                result = cached_result.copy()
-                title_cache_hit = True
-            else:
-                # Node set changed, need to regenerate
-                title_cache_hit = False
-        else:
-            title_cache_hit = False
-        
-        # Generate titles if not cached
-        if not title_cache_hit:
-            result = {}
-            for cluster_id, node_id_list in clusters.items():
-                cluster_texts = [node_texts[node_id] for node_id in node_id_list]
-                combined_text = "\n\n".join(cluster_texts)
-                
-                title_prompt = (
-                    f"Based on the following collection of related text snippets, "
-                    f"generate a short, descriptive title (maximum 5 words) that summarizes the main theme or topic:\n\n"
-                    f"{combined_text}\n\n"
-                    f"Title:"
-                )
-                title_response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant that generates concise, descriptive titles."},
-                        {"role": "user", "content": title_prompt}
-                    ],
-                    max_tokens=20
-                )
-                cluster_title = title_response.choices[0].message.content.strip()
-                cluster_title = cluster_title.strip('"').strip("'")
-                result[cluster_title] = node_id_list
+            # Get node titles to potentially use as a reference
+            node_titles = [request.context[nid].title for nid in node_id_list]
             
-            # Cache the result
-            cluster_cache[cluster_hash] = result.copy()
-        
-        # Clean up old cache entries (keep only last 10 configurations to prevent memory bloat)
-        if len(cluster_cache) > 10:
-            # Remove oldest entry (simple FIFO - in production, use LRU cache)
-            oldest_key = next(iter(cluster_cache))
-            del cluster_cache[oldest_key]
+            title_prompt = (
+                f"Based on the following collection of related text snippets, "
+                f"generate a very short, concise title (2-3 words maximum, prefer just a name or key term) that identifies the main topic.\n"
+                f"Examples: 'Zohran Mamdani' (not 'Zohran Mamdani: NYC's Progressive Future'), 'Quantum Computing', 'Climate Policy'.\n\n"
+                f"Node titles in this cluster: {', '.join(node_titles[:5])}\n\n"
+                f"Text snippets:\n{combined_text}\n\n"
+                f"Title (2-3 words, just the key identifier):"
+            )
+            title_response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that generates very concise, brief titles. Always prefer the shortest possible identifier - just a name, key term, or 2-3 word phrase. Never include colons, descriptions, or explanatory text."},
+                    {"role": "user", "content": title_prompt}
+                ],
+                max_tokens=15
+            )
+            cluster_title = title_response.choices[0].message.content.strip()
+            cluster_title = cluster_title.strip('"').strip("'")
+            
+            # Post-process to extract first part before colon or other separators
+            # Common separators: colon, dash, pipe, semicolon
+            for separator in [':', ' -', ' —', ' |', ';']:
+                if separator in cluster_title:
+                    cluster_title = cluster_title.split(separator)[0].strip()
+                    break
+            
+            # Limit to first 3 words if still too long
+            words = cluster_title.split()
+            if len(words) > 3:
+                cluster_title = ' '.join(words[:3])
+            
+            result[cluster_title] = node_id_list
         
         # Concise summary log with clear formatting
         logger.info(f"\n{'='*60}")
         logger.info(f"🧩 CLUSTERING COMPLETE")
         logger.info(f"   Total Nodes: {n_nodes} | Clusters: {n_clusters} | Quality (inertia): {kmeans.inertia_:.2f}")
-        logger.info(f"   Embedding Cache: {cache_hits} hits, {cache_misses} new ({cache_hits*100//n_nodes if n_nodes > 0 else 0}% cached)")
-        if title_cache_hit:
-            logger.info(f"   Title Cache: HIT (reused {len(result)} titles, saved {len(result)} GPT calls)")
-        else:
-            logger.info(f"   Title Cache: MISS (generated {len(result)} new titles)")
+        logger.info(f"   Generated {len(result)} cluster titles")
         logger.info(f"\n📊 CLUSTER BREAKDOWN:")
         for idx, (cluster_title, node_id_list) in enumerate(result.items(), 1):
             node_titles = [request.context[nid].title for nid in node_id_list]
@@ -396,51 +342,6 @@ async def cluster_endpoint(request: ClusterRequest):
         
     except Exception as e:
         logger.error(f"Error in cluster endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/warm-cache")
-async def warm_cache_endpoint(request: ClusterRequest):
-    """
-    Warm up the cache by creating embeddings for all nodes.
-    Called by frontend on startup to restore cache after backend restart.
-    """
-    try:
-        if not request.context or len(request.context) == 0:
-            return {"message": "No nodes to cache", "cached": 0}
-        
-        cached_count = 0
-        new_count = 0
-        
-        for node_id, node in request.context.items():
-            node_query = node.query if node.query else ""
-            node_text = f"{node_query} {node.title} {node.content}".strip()
-            
-            cache_key = get_node_cache_key(node_id, node_text)
-            if cache_key in node_embedding_cache:
-                cached_count += 1
-            else:
-                # Create embedding and cache it
-                embedding_response = client.embeddings.create(
-                    model="text-embedding-3-small",
-                    input=node_text
-                )
-                embedding = np.array(embedding_response.data[0].embedding)
-                node_embedding_cache[cache_key] = embedding
-                new_count += 1
-        
-        total = cached_count + new_count
-        logger.info(f"🔥 CACHE WARMED | {new_count} new embeddings created, {cached_count} already cached (total: {total})")
-        
-        return {
-            "message": "Cache warmed successfully",
-            "total_nodes": total,
-            "new_cached": new_count,
-            "already_cached": cached_count
-        }
-        
-    except Exception as e:
-        logger.error(f"Error warming cache: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

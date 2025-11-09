@@ -16,15 +16,16 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 
 import { useCallback, useEffect, useMemo, useState, useRef, createContext, useContext } from 'react';
-import { CardNode, CardNodeData } from './CardNode';
+import { CardNode, CardNodeData, getClusterColor, assignClusterColors } from './CardNode';
 import { CustomEdge } from './CustomEdge';
 import { SessionManager } from './SessionManager';
 import { ChatPanel, ChatMessage } from './ChatPanel';
 import { FloatingChat } from './FloatingChat';
+import { ClusterLegend } from './ClusterLegend';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
 import { applyRadialLayout } from '../utils/layout-elk';
-import { generateContent, NodeContext, autoMode, Subtopic, clusterNodes, ClusterResult, warmCache } from '../utils/api';
+import { generateContent, NodeContext, autoMode, Subtopic, clusterNodes, ClusterResult } from '../utils/api';
 import { calculateSubtopicDimensions } from '../utils/subtopic-sizing';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 
@@ -101,6 +102,8 @@ export default function Canvas() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [isChatPanelOpen, setIsChatPanelOpen] = useState(false);
   const [clusterData, setClusterData] = useState<ClusterResult | null>(null);
+  const [isLegendVisible, setIsLegendVisible] = useState(true);
+  const hasShownLegendRef = useRef(false);
 
   // Helper function to build path from root to a given node
   const buildPath = useCallback((targetNodeId: string, currentEdges: Edge[]): string[] => {
@@ -531,6 +534,35 @@ export default function Canvas() {
           setNodes(sessionData.nodes || INITIAL_NODES);
           setEdges(sessionData.edges || INITIAL_EDGES);
           setCurrentSessionName(name);
+          
+          // Run clustering on loaded nodes to get cluster colors
+          const loadedNodes = sessionData.nodes || INITIAL_NODES;
+          const allNodesContext: Record<string, NodeContext> = {};
+          loadedNodes.forEach((node) => {
+            if (!node.data?.isRoot && node.data?.title && node.data?.body) {
+              allNodesContext[node.id] = {
+                id: node.id,
+                title: node.data.title,
+                content: node.data.body,
+              };
+            }
+          });
+          
+          // Cluster the loaded nodes if there are enough nodes
+          if (Object.keys(allNodesContext).length > 1) {
+            hasShownLegendRef.current = false; // Reset so legend shows for loaded session
+            clusterNodes(allNodesContext)
+              .then((clusters) => {
+                setClusterData(clusters);
+              })
+              .catch((error) => {
+                console.error('Clustering failed on session load:', error);
+              });
+          } else {
+            // Clear cluster data if not enough nodes
+            setClusterData(null);
+            hasShownLegendRef.current = false;
+          }
         }
       }
     } catch (error) {
@@ -543,6 +575,8 @@ export default function Canvas() {
     setNodes(INITIAL_NODES);
     setEdges(INITIAL_EDGES);
     setCurrentSessionName('New Session');
+    setClusterData(null); // Clear cluster data for new session
+    hasShownLegendRef.current = false; // Reset legend visibility state
   }, [setNodes, setEdges]);
 
   // Delete a session
@@ -587,38 +621,68 @@ export default function Canvas() {
     setNodes(INITIAL_NODES);
   }, [setNodes, loadSessionsList, loadSession]);
 
-  // Warm cache on mount/reload if nodes exist (restores cache after backend restart)
-  const cacheWarmedRef = useRef(false);
+
+  // Apply cluster colors to nodes when clusterData changes
   useEffect(() => {
-    // Only run once, and only if we have nodes
-    if (cacheWarmedRef.current || nodes.length <= 1) return;
+    if (!clusterData || Object.keys(clusterData).length === 0) {
+      return;
+    }
+
+    // Get cluster titles in a consistent order
+    const clusterTitles = Object.keys(clusterData);
     
-    // Build context for all non-root nodes
-    const allNodesContext: Record<string, NodeContext> = {};
-    nodes.forEach((node) => {
-      if (!node.data?.isRoot && node.data?.title && node.data?.body) {
-        allNodesContext[node.id] = {
-          id: node.id,
-          title: node.data.title,
-          content: node.data.body,
-        };
-      }
+    // Assign colors maximizing contrast between clusters
+    const clusterColorMap = assignClusterColors(clusterTitles);
+
+    // Build a map of nodeId -> clusterColor
+    const nodeToClusterColor = new Map<string, string>();
+    Object.entries(clusterData).forEach(([clusterTitle, nodeIds]) => {
+      const clusterColor = clusterColorMap[clusterTitle];
+      nodeIds.forEach(nodeId => {
+        nodeToClusterColor.set(nodeId, clusterColor);
+      });
     });
 
-    // Warm the cache if we have nodes
-    if (Object.keys(allNodesContext).length > 0) {
-      cacheWarmedRef.current = true; // Mark as warmed before async call
-      warmCache(allNodesContext)
-        .then((result) => {
-          if (result.new_cached > 0) {
-            console.log(`🔥 Cache warmed: ${result.new_cached} embeddings created for ${result.total_nodes} nodes`);
-          }
-        })
-        .catch((error) => {
-          console.error('Failed to warm cache:', error);
-        });
+    // Update nodes with cluster colors (only for non-root, non-subtopic nodes)
+    setNodes(currentNodes => {
+      return currentNodes.map(node => {
+        // Skip root nodes, subtopic nodes, and loading nodes
+        if (node.data?.isRoot || node.data?.isSubtopic || node.data?.isLoading) {
+          return node;
+        }
+
+        // Apply cluster color if this node is in a cluster
+        const clusterColor = nodeToClusterColor.get(node.id);
+        if (clusterColor) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              color: clusterColor,
+            },
+          };
+        }
+
+        // If node is not in any cluster, keep existing color (or no color)
+        return node;
+      });
+    });
+
+  }, [clusterData, setNodes]);
+
+  // Show legend when cluster data first appears (only once per session)
+  useEffect(() => {
+    if (clusterData && Object.keys(clusterData).length > 0) {
+      if (!hasShownLegendRef.current) {
+        setIsLegendVisible(true);
+        hasShownLegendRef.current = true;
+      }
+    } else {
+      // Reset when clusters are cleared (e.g., new session)
+      hasShownLegendRef.current = false;
+      setIsLegendVisible(false);
     }
-  }, [nodes]); // Trigger when nodes change
+  }, [clusterData]);
 
   // Auto-save current session when nodes or edges change
   useEffect(() => {
@@ -701,6 +765,26 @@ export default function Canvas() {
         >
           <FileText className="w-4 h-4" />
         </button>
+
+        {/* Cluster Legend */}
+        {isLegendVisible && (
+          <ClusterLegend
+            clusterData={clusterData}
+            onClose={() => setIsLegendVisible(false)}
+          />
+        )}
+
+        {/* Show legend button when hidden */}
+        {!isLegendVisible && clusterData && Object.keys(clusterData).length > 0 && (
+          <button
+            onClick={() => setIsLegendVisible(true)}
+            className="absolute bottom-4 left-4 z-50 flex items-center gap-2 px-3 py-2 bg-black/60 backdrop-blur-sm border border-white/20 rounded-lg text-white hover:bg-black/70 transition-colors text-sm"
+            title="Show cluster legend"
+          >
+            <span className="w-2 h-2 rounded-full bg-blue-400"></span>
+            Clusters
+          </button>
+        )}
 
         <div style={{ width: '100%', height: '100%' }}>
           <CanvasContext.Provider value={contextValue}>

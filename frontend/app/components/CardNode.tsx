@@ -6,16 +6,17 @@ import { MessageSquarePlus, ExternalLink } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-// Color palette for highlights, edges, and nodes
+// Color palette ordered for maximum contrast - opposite/complementary colors spaced apart
+// This ensures clusters get colors that are visually distinct
 const COLOR_PALETTE = [
-  '#60A5FA', // blue
-  '#34D399', // green
-  '#A78BFA', // purple
-  '#FB923C', // orange
-  '#F472B6', // pink
-  '#2DD4BF', // teal
-  '#FBBF24', // yellow
-  '#F87171', // red
+  '#60A5FA', // blue (0°)
+  '#FB923C', // orange (30°) - complementary to blue
+  '#34D399', // green (150°) - opposite to red/pink
+  '#F472B6', // pink (330°) - opposite to green
+  '#FBBF24', // yellow (60°) - between orange and green
+  '#A78BFA', // purple (270°) - opposite to yellow
+  '#F87171', // red (0°) - opposite to cyan/teal
+  '#2DD4BF', // teal (180°) - opposite to red
 ];
 
 // Get consistent color for a category (hash-based)
@@ -26,6 +27,109 @@ function getCategoryColor(category: string): string {
   }
   const index = Math.abs(hash) % COLOR_PALETTE.length;
   return COLOR_PALETTE[index];
+}
+
+// Calculate color distance in RGB space (Euclidean distance)
+function colorDistance(color1: string, color2: string): number {
+  const hex1 = color1.replace('#', '');
+  const hex2 = color2.replace('#', '');
+  const r1 = parseInt(hex1.substring(0, 2), 16);
+  const g1 = parseInt(hex1.substring(2, 4), 16);
+  const b1 = parseInt(hex1.substring(4, 6), 16);
+  const r2 = parseInt(hex2.substring(0, 2), 16);
+  const g2 = parseInt(hex2.substring(2, 4), 16);
+  const b2 = parseInt(hex2.substring(4, 6), 16);
+  return Math.sqrt(Math.pow(r2 - r1, 2) + Math.pow(g2 - g1, 2) + Math.pow(b2 - b1, 2));
+}
+
+// Assign colors to clusters maximizing contrast between all clusters
+export function assignClusterColors(clusterTitles: string[]): Record<string, string> {
+  if (clusterTitles.length === 0) return {};
+  
+  // Sort titles for consistent ordering
+  const sortedTitles = [...clusterTitles].sort();
+  const assignments: Record<string, string> = {};
+  const usedColors = new Set<string>();
+  
+  // For each cluster, assign the color that maximizes minimum distance to all already assigned colors
+  for (const title of sortedTitles) {
+    if (usedColors.size === 0) {
+      // First cluster gets the first color
+      assignments[title] = COLOR_PALETTE[0];
+      usedColors.add(COLOR_PALETTE[0]);
+    } else if (usedColors.size < COLOR_PALETTE.length) {
+      // For remaining colors in palette, find the one with maximum minimum distance
+      let bestColor = COLOR_PALETTE[0];
+      let maxMinDistance = -1;
+      
+      for (const candidateColor of COLOR_PALETTE) {
+        if (usedColors.has(candidateColor)) {
+          continue;
+        }
+        
+        // Find minimum distance to any used color
+        let minDistance = Infinity;
+        for (const usedColor of usedColors) {
+          const dist = colorDistance(candidateColor, usedColor);
+          minDistance = Math.min(minDistance, dist);
+        }
+        
+        if (minDistance > maxMinDistance) {
+          maxMinDistance = minDistance;
+          bestColor = candidateColor;
+        }
+      }
+      
+      assignments[title] = bestColor;
+      usedColors.add(bestColor);
+    } else {
+      // All colors used, find the color that maximizes minimum distance to all used colors
+      // This allows reuse but ensures maximum contrast
+      let bestColor = COLOR_PALETTE[0];
+      let maxMinDistance = -1;
+      
+      for (const candidateColor of COLOR_PALETTE) {
+        // Find minimum distance to any used color
+        let minDistance = Infinity;
+        for (const usedColor of usedColors) {
+          const dist = colorDistance(candidateColor, usedColor);
+          minDistance = Math.min(minDistance, dist);
+        }
+        
+        if (minDistance > maxMinDistance) {
+          maxMinDistance = minDistance;
+          bestColor = candidateColor;
+        }
+      }
+      
+      assignments[title] = bestColor;
+      // Don't add to usedColors here since we're reusing colors
+      // But track which colors are used for this assignment round
+    }
+  }
+  
+  return assignments;
+}
+
+// Legacy function for backward compatibility (used by ClusterLegend)
+export function getClusterColor(clusterTitle: string): string {
+  // This is a fallback - should use assignClusterColors in Canvas instead
+  let hash = 0;
+  for (let i = 0; i < clusterTitle.length; i++) {
+    hash = clusterTitle.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const index = Math.abs(hash) % COLOR_PALETTE.length;
+  return COLOR_PALETTE[index];
+}
+
+// Convert hex color to rgba with opacity
+function hexToRgba(hex: string, opacity: number): string {
+  // Remove # if present
+  hex = hex.replace('#', '');
+  const r = parseInt(hex.substring(0, 2), 16);
+  const g = parseInt(hex.substring(2, 4), 16);
+  const b = parseInt(hex.substring(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
 }
 
 export interface CardNodeData {
@@ -292,10 +396,13 @@ useEffect(() => {
               onNodeClick(id);
             }
           }}
-          className="cursor-pointer nopan relative rounded-3xl border-2 bg-neutral-900/90 text-neutral-100 shadow-2xl overflow-hidden transition-all"
+          className="cursor-pointer nopan relative rounded-3xl text-neutral-100 shadow-2xl overflow-hidden transition-all"
           style={{
             width: data.isSubtopic ? undefined : 500, // Subtopics use their calculated width, regular nodes use 500px
-            borderColor: data.color || 'rgba(255, 255, 255, 0.1)',
+            borderWidth: '2px',
+            borderStyle: 'solid',
+            borderColor: 'rgba(255, 255, 255, 0.1)', // Default border for all nodes
+            backgroundColor: 'rgba(17, 17, 17, 0.9)', // Base background
             boxShadow: isSelected && isChatPanelOpen
               ? `0 0 0 4px ${data.color || '#60A5FA'}40, 0 0 30px ${data.color || '#60A5FA'}80`
               : isInActivePath && isChatPanelOpen
@@ -303,7 +410,16 @@ useEffect(() => {
               : undefined,
           }}
         >
-        <div className="flex flex-col gap-2 min-h-full">
+        {/* Subtle cluster color background overlay */}
+        {data.color && !data.isRoot && !data.isSubtopic && (
+          <div
+            className="absolute inset-0 pointer-events-none rounded-3xl"
+            style={{
+              background: `linear-gradient(135deg, ${hexToRgba(data.color, 0.15)} 0%, ${hexToRgba(data.color, 0.08)} 100%)`,
+            }}
+          />
+        )}
+        <div className="flex flex-col gap-2 min-h-full relative z-10">
           {data.isRoot ? (
             <div className="p-8 flex flex-col gap-4 justify-center flex-1">
               <h2 className="text-2xl font-semibold text-center">What's your rabbit hole? 🐰</h2>

@@ -135,36 +135,4 @@ export async function clusterNodes(
   }
 }
 
-export interface WarmCacheResult {
-  message: string;
-  total_nodes: number;
-  new_cached: number;
-  already_cached: number;
-}
-
-export async function warmCache(
-  nodes: Record<string, NodeContext>
-): Promise<WarmCacheResult> {
-  try {
-    const response = await fetch(`${API_BASE_URL}/warm-cache`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        context: nodes,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`Warm cache request failed: ${response.status} ${response.statusText}`);
-    }
-
-    const data = await response.json();
-    return data;
-  } catch (error) {
-    console.error('Failed to warm cache:', error);
-    throw error;
-  }
-}
 
