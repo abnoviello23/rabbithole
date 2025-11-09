@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 import numpy as np
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
 import math
 
 # Set up logging
@@ -318,52 +319,102 @@ async def cluster_endpoint(request: ClusterRequest):
         
         embeddings_array = np.array(embeddings)
         
-        # Step 2: Determine optimal number of clusters using elbow method
+        # Step 2: Determine optimal number of clusters using improved method
         n_nodes = len(node_ids)
         
         if n_nodes <= 2:
             n_clusters = n_nodes
         else:
-            # Test k values from 1 to min(sqrt(n), n-1) or max 10 for efficiency
-            max_k = min(int(math.sqrt(n_nodes)) + 1, n_nodes, 10)
-            k_range = range(1, max_k + 1)
+            # Increase max_k to allow more clusters - use a more generous formula
+            # For small datasets, allow more clusters; cap at reasonable max
+            if n_nodes <= 10:
+                max_k = min(n_nodes - 1, 8)  # Allow up to 8 clusters for small datasets
+            elif n_nodes <= 20:
+                max_k = min(int(n_nodes * 0.6), 10)  # 60% of nodes, max 10
+            else:
+                max_k = min(int(n_nodes * 0.5), 15)  # 50% of nodes, max 15
+            
+            k_range = range(2, max_k + 1)  # Start from k=2 (minimum meaningful clusters)
             inertias = []
+            silhouette_scores = []
             
             for k in k_range:
                 kmeans_test = KMeans(n_clusters=k, random_state=42, n_init=10)
-                kmeans_test.fit(embeddings_array)
+                labels = kmeans_test.fit_predict(embeddings_array)
                 inertias.append(kmeans_test.inertia_)
+                
+                # Calculate silhouette score (only if more than 1 cluster and enough samples)
+                if k > 1 and len(set(labels)) > 1:
+                    try:
+                        sil_score = silhouette_score(embeddings_array, labels)
+                        silhouette_scores.append(sil_score)
+                    except:
+                        silhouette_scores.append(-1)
+                else:
+                    silhouette_scores.append(-1)
             
-            # Log elbow method calculation for debugging
+            # Log calculations for debugging
             inertia_summary = ", ".join([f"k={k}:{inertia:.2f}" for k, inertia in zip(k_range, inertias)])
-            logger.info(f"   Elbow Test: {inertia_summary}")
+            logger.info(f"   Inertia Test: {inertia_summary}")
             
-            if len(inertias) > 2:
-                # Automated elbow method using point furthest from line connected 1st and last points
-                first_point = np.array([k_range[0], inertias[0]])
-                last_point = np.array([k_range[-1], inertias[-1]])
-                line_vec = last_point - first_point
-                line_norm = np.linalg.norm(line_vec)
-                
-                max_dist = -1
-                optimal_k_idx = 1  # Default to k=2 (index 1) if no clear elbow
-                
-                for i in range(1, len(inertias) - 1):
-                    point = np.array([k_range[i], inertias[i]])
-                    point_vec = point - first_point
-                    # Distance from point to line (using manual calculation to avoid NumPy warning)
-                    dist = abs(point_vec[0] * line_vec[1] - point_vec[1] * line_vec[0]) / line_norm if line_norm > 0 else 0
-                    
-                    if dist > max_dist:
-                        max_dist = dist
-                        optimal_k_idx = i
-                
-                n_clusters = k_range[optimal_k_idx]
-                logger.info(f"   Elbow Method: Chose k={n_clusters} (point {optimal_k_idx+1} furthest from line, distance={max_dist:.3f})")
+            if len(silhouette_scores) > 0 and max(silhouette_scores) > -1:
+                sil_summary = ", ".join([f"k={k}:{sil:.3f}" for k, sil in zip(k_range, silhouette_scores)])
+                logger.info(f"   Silhouette Scores: {sil_summary}")
+            
+            # Method 1: Use silhouette score to find optimal k (favors more granular clusters)
+            if len(silhouette_scores) > 0 and max(silhouette_scores) > 0.1:
+                # Find k with highest silhouette score
+                best_sil_idx = np.argmax(silhouette_scores)
+                n_clusters_sil = k_range[best_sil_idx]
+                best_sil_score = silhouette_scores[best_sil_idx]
+                logger.info(f"   Silhouette Method: Best k={n_clusters_sil} (score={best_sil_score:.3f})")
             else:
-                # If we can't compute elbow (too few k values tested), use k=1
-                n_clusters = 1
-                logger.info(f"   Elbow Method: Too few k values, defaulting to k=1")
+                n_clusters_sil = None
+                best_sil_score = -1
+            
+            # Method 2: Percentage decrease method (find where inertia decrease slows significantly)
+            if len(inertias) > 1:
+                # Calculate percentage decrease in inertia for each step
+                decreases = []
+                for i in range(1, len(inertias)):
+                    if inertias[i-1] > 0:
+                        pct_decrease = (inertias[i-1] - inertias[i]) / inertias[i-1] * 100
+                        decreases.append((k_range[i], pct_decrease))
+                    else:
+                        decreases.append((k_range[i], 0))
+                
+                # Find the elbow: where the decrease becomes small (less than threshold)
+                # Use a threshold that encourages more clusters (lower threshold = more clusters)
+                threshold = 8.0  # If inertia decreases by less than 8%, we've hit the elbow
+                
+                # Find the last k where decrease is still significant
+                n_clusters_pct = k_range[0]  # Default to minimum
+                for k, decrease in decreases:
+                    if decrease > threshold:
+                        n_clusters_pct = k  # Update to this k since it still has good decrease
+                    # Continue to find the last good one (allows more clusters)
+                
+                logger.info(f"   Percentage Decrease: {', '.join([f'k={k}:{dec:.1f}%' for k, dec in decreases[:5]])}")
+                logger.info(f"   Percentage Decrease Method: k={n_clusters_pct} (threshold={threshold}%)")
+            else:
+                n_clusters_pct = k_range[0] if len(k_range) > 0 else 2
+            
+            # Combine methods: prefer silhouette if good, otherwise use percentage decrease
+            # But bias towards more clusters when scores are similar
+            if n_clusters_sil and best_sil_score > 0.2:
+                n_clusters = n_clusters_sil
+                logger.info(f"   Using Silhouette score method (score={best_sil_score:.3f})")
+            else:
+                n_clusters = n_clusters_pct
+                logger.info(f"   Using Percentage decrease method")
+            
+            # Ensure minimum clusters based on data size
+            min_clusters = min(3, max(2, n_nodes // 5))  # At least 2-3 clusters for reasonable datasets
+            if n_clusters < min_clusters and n_nodes >= min_clusters * 2:
+                n_clusters = min_clusters
+                logger.info(f"   Adjusted to minimum: k={n_clusters} (based on dataset size)")
+            
+            logger.info(f"   Final chosen k={n_clusters}")
         
         # clustering with optimal k value!
         kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
