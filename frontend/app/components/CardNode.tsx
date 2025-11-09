@@ -29,6 +29,9 @@ export interface CardNodeData {
 
 interface CardNodeComponentProps extends NodeProps<CardNodeData> {
   onAddNote?: (sourceId: string, text: string, color?: string) => void;
+  onNodeClick?: (nodeId: string) => void;
+  isInActivePath?: boolean;
+  isSelected?: boolean;
 }
 
 interface PersistentHighlight {
@@ -37,7 +40,7 @@ interface PersistentHighlight {
   nodeId: string;
 }
 
-export function CardNode({ data, id, onAddNote }: CardNodeComponentProps) {
+export function CardNode({ data, id, onAddNote, onNodeClick, isInActivePath, isSelected }: CardNodeComponentProps) {
   const [show, setShow] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string; range: Range; color: string } | null>(null);
@@ -204,10 +207,23 @@ useEffect(() => {
 
       <div
         ref={nodeRef}
-        className="cursor-default nopan relative rounded-3xl border-2 bg-neutral-900/90 text-neutral-100 shadow-2xl overflow-hidden"
+        onClick={(e) => {
+          // Only trigger node click if clicking on the node itself, not text or interactive elements
+          const target = e.target as HTMLElement;
+          const isClickOnText = target.closest('.select-text, input, button, a');
+          if (!isClickOnText && onNodeClick) {
+            onNodeClick(id);
+          }
+        }}
+        className="cursor-pointer nopan relative rounded-3xl border-2 bg-neutral-900/90 text-neutral-100 shadow-2xl overflow-hidden transition-all"
         style={{
           width: 400,
-          borderColor: data.color || 'rgba(255, 255, 255, 0.1)',
+          borderColor: isInActivePath || isSelected ? (data.color || '#60A5FA') : 'rgba(255, 255, 255, 0.1)',
+          boxShadow: isSelected
+            ? `0 0 0 4px ${data.color || '#60A5FA'}40, 0 0 30px ${data.color || '#60A5FA'}80`
+            : isInActivePath
+            ? `0 0 0 3px ${data.color || '#60A5FA'}30, 0 0 20px ${data.color || '#60A5FA'}40`
+            : undefined,
         }}
       >
         <div className="flex flex-col gap-2 min-h-full">

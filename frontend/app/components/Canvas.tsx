@@ -19,6 +19,8 @@ import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { CardNode, CardNodeData } from './CardNode';
 import { CustomEdge } from './CustomEdge';
 import { SessionManager } from './SessionManager';
+import { ChatPanel, ChatMessage } from './ChatPanel';
+import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
 import { generateContent, NodeContext } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
@@ -40,6 +42,8 @@ export default function Canvas() {
   const [currentSessionName, setCurrentSessionName] = useState<string>('New Session');
   const [sessions, setSessions] = useState<string[]>([]);
   const saveTimeoutRef = useRef<NodeJS.Timeout>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [isChatPanelOpen, setIsChatPanelOpen] = useState(false);
 
   // Helper function to build path from root to a given node
   const buildPath = useCallback((targetNodeId: string, currentEdges: Edge[]): string[] => {
@@ -74,6 +78,38 @@ export default function Canvas() {
 
     return context;
   }, []);
+
+  // Helper function to build lineage for chat view
+  const buildLineage = useCallback((targetNodeId: string | null): ChatMessage[] => {
+    if (!targetNodeId) return [];
+
+    const pathIds = buildPath(targetNodeId, edges);
+    const lineage: ChatMessage[] = [];
+
+    pathIds.forEach((nodeId, index) => {
+      const node = nodes.find((n) => n.id === nodeId);
+      if (!node || !node.data) return;
+
+      // Skip root node
+      if (node.data.isRoot) return;
+
+      // Find the edge that led to this node (to get the query)
+      const incomingEdge = edges.find((e) => e.target === nodeId);
+      const query = incomingEdge?.label as string | undefined;
+      const color = (incomingEdge?.data as any)?.color;
+
+      lineage.push({
+        nodeId,
+        title: node.data.title,
+        body: node.data.body,
+        query,
+        color,
+        isRoot: node.data.isRoot,
+      });
+    });
+
+    return lineage;
+  }, [nodes, edges, buildPath]);
 
   const handleAddNote = useCallback(async (sourceId: string, query: string, color?: string) => {
     const nodeId = `node-${Date.now()}`;
@@ -152,18 +188,44 @@ export default function Canvas() {
     }
   }, [setNodes, setEdges, buildPath, buildContext]);
 
+  // Calculate active path node IDs
+  const activePathNodeIds = useMemo(() => {
+    if (!selectedNodeId) return new Set<string>();
+    const pathIds = buildPath(selectedNodeId, edges);
+    return new Set(pathIds);
+  }, [selectedNodeId, edges, buildPath]);
+
+  // Handle node click (for selection)
+  const handleNodeClick = useCallback((nodeId: string) => {
+    setSelectedNodeId(nodeId);
+    setIsChatPanelOpen(true);
+  }, []);
+
   const nodeTypes = useMemo(
     () => ({
-      card: (props: any) => <CardNode {...props} onAddNote={handleAddNote} />,
+      card: (props: any) => (
+        <CardNode
+          {...props}
+          onAddNote={handleAddNote}
+          onNodeClick={handleNodeClick}
+          isInActivePath={activePathNodeIds.has(props.id)}
+          isSelected={props.id === selectedNodeId}
+        />
+      ),
     }),
-    [handleAddNote]
+    [handleAddNote, handleNodeClick, activePathNodeIds, selectedNodeId]
   );
 
   const edgeTypes = useMemo(
     () => ({
-      custom: CustomEdge,
+      custom: (props: any) => (
+        <CustomEdge
+          {...props}
+          isInActivePath={activePathNodeIds.has(props.source) && activePathNodeIds.has(props.target)}
+        />
+      ),
     }),
-    []
+    [activePathNodeIds]
   );
 
   // Generate session name from first edge label (initial query)
@@ -326,43 +388,71 @@ export default function Canvas() {
   }, [nodes.map(n => `${n.id}:${n.width}:${n.height}:${n.data?.isLoading}`).join(','), edges]);
 
   return (
-    <div style={{ height: '100vh', width: '100vw', background: '#0a0a0a' }}>
-      <SessionManager
-        currentSession={currentSessionName}
-        sessions={sessions}
-        onLoadSession={loadSession}
-        onCreateSession={createNewSession}
-        onDeleteSession={deleteSession}
-      />
-
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={(c) => setEdges((es) => addEdge({ ...c, type: 'custom' }, es))}
-        fitView
-        fitViewOptions={{ padding: 5.5 }}
-        minZoom={0.1}
-        maxZoom={4}
-        nodesDraggable={false}
-        elementsSelectable={true}
-        panOnScroll={true}
-        zoomOnScroll={false}
-        zoomOnPinch={true}
-        panOnScrollMode={PanOnScrollMode.Free}
-        defaultEdgeOptions={{
-          type: 'custom',
-          style: { stroke: '#9CA3AF', strokeWidth: 2 },
-          markerEnd: { type: MarkerType.ArrowClosed, color: '#9CA3AF' },
+    <div style={{ height: '100vh', width: '100vw', background: '#0a0a0a', display: 'flex' }}>
+      {/* Canvas area */}
+      <div
+        style={{
+          width: isChatPanelOpen ? '66.666%' : '100%',
+          height: '100vh',
+          transition: 'width 300ms ease-in-out',
+          position: 'relative',
         }}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
       >
-        <Background variant={BackgroundVariant.Dots} gap={32} size={1} color="#2a2a2a" />
-        <MiniMap pannable zoomable maskColor="rgba(0,0,0,0.6)" />
-        <Controls />
-      </ReactFlow>
+        <SessionManager
+          currentSession={currentSessionName}
+          sessions={sessions}
+          onLoadSession={loadSession}
+          onCreateSession={createNewSession}
+          onDeleteSession={deleteSession}
+        />
+
+        {/* Chat panel toggle button */}
+        <button
+          onClick={() => setIsChatPanelOpen(!isChatPanelOpen)}
+          className="absolute top-4 right-4 z-50 flex items-center gap-2 px-4 py-2 bg-black/40 backdrop-blur-sm border border-white/20 rounded-lg text-white hover:bg-black/50 transition-colors"
+          title="View conversation path"
+        >
+          <FileText className="w-4 h-4" />
+        </button>
+
+        <div style={{ width: '100%', height: '100%' }}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={(c) => setEdges((es) => addEdge({ ...c, type: 'custom' }, es))}
+            fitView
+            fitViewOptions={{ padding: 5.5 }}
+            minZoom={0.1}
+            maxZoom={4}
+            nodesDraggable={false}
+            elementsSelectable={true}
+            panOnScroll={true}
+            zoomOnScroll={false}
+            zoomOnPinch={true}
+            panOnScrollMode={PanOnScrollMode.Free}
+            defaultEdgeOptions={{
+              type: 'custom',
+              style: { stroke: '#9CA3AF', strokeWidth: 2 },
+              markerEnd: { type: MarkerType.ArrowClosed, color: '#9CA3AF' },
+            }}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+          >
+            <Background variant={BackgroundVariant.Dots} gap={32} size={1} color="#2a2a2a" />
+            <MiniMap pannable zoomable maskColor="rgba(0,0,0,0.6)" />
+            <Controls />
+          </ReactFlow>
+        </div>
+      </div>
+
+      {/* Chat panel */}
+      <ChatPanel
+        isOpen={isChatPanelOpen}
+        onClose={() => setIsChatPanelOpen(false)}
+        lineage={buildLineage(selectedNodeId)}
+      />
     </div>
   );
 }
