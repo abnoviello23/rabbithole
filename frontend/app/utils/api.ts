@@ -1,7 +1,7 @@
 export interface GeneratedContent {
   title: string;
   body: string;
-  image: string;
+  image?: string;
 }
 
 export interface NodeContext {
@@ -51,7 +51,7 @@ export async function generateContent(
     return {
       title: data.title || query,
       body: data.response || '',
-      image: PLACEHOLDER_IMAGES[Math.floor(Math.random() * PLACEHOLDER_IMAGES.length)],
+      // image: PLACEHOLDER_IMAGES[Math.floor(Math.random() * PLACEHOLDER_IMAGES.length)],
     };
   } catch (error) {
     console.error('Failed to generate content:', error);

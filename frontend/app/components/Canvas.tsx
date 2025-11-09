@@ -16,6 +16,7 @@ import 'reactflow/dist/style.css';
 
 import { useCallback, useEffect, useMemo } from 'react';
 import { CardNode, CardNodeData } from './CardNode';
+import { CustomEdge } from './CustomEdge';
 import { layoutNodes } from '../utils/layout';
 import { generateContent, NodeContext } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
@@ -79,10 +80,8 @@ export default function Canvas() {
       id: edgeId,
       source: sourceId,
       target: nodeId,
+      type: 'custom',
       label: query,
-      labelStyle: { fill: '#ffffff', fontWeight: 500, fontSize: 18 },
-      labelBgStyle: { fill: '#0a0a0a', fillOpacity: 1.0 },
-      labelBgPadding: [8, 4] as [number, number],
     };
 
     // Add edge and loading node with immediate layout
@@ -139,6 +138,13 @@ export default function Canvas() {
     [handleAddNote]
   );
 
+  const edgeTypes = useMemo(
+    () => ({
+      custom: CustomEdge,
+    }),
+    []
+  );
+
   // Initialize nodes (let ReactFlow measure them first)
   useEffect(() => {
     setNodes(INITIAL_NODES);
@@ -171,19 +177,20 @@ export default function Canvas() {
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onConnect={(c) => setEdges((es) => addEdge({ ...c, type: 'smoothstep' }, es))}
+        onConnect={(c) => setEdges((es) => addEdge({ ...c, type: 'custom' }, es))}
         fitView
-        fitViewOptions={{ padding: 1.5 }}
+        fitViewOptions={{ padding: 5.5 }}
         minZoom={0.1}
         maxZoom={4}
         nodesDraggable={false}
         elementsSelectable={true}
         defaultEdgeOptions={{
-          type: 'smoothstep',
+          type: 'custom',
           style: { stroke: '#9CA3AF', strokeWidth: 2 },
           markerEnd: { type: MarkerType.ArrowClosed, color: '#9CA3AF' },
         }}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
       >
         <Background variant={BackgroundVariant.Dots} gap={32} size={1} color="#2a2a2a" />
         <MiniMap pannable zoomable maskColor="rgba(0,0,0,0.6)" />
