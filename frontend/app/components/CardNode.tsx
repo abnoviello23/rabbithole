@@ -94,8 +94,8 @@ useEffect(() => {
                 <img src={data.image} alt="" className="col-span-2 p-6 object-contain max-h-64" />
               )}
               <div className="col-span-3 p-6">
-                <h2 className="text-xl font-semibold mb-2 select-text">{data.title}</h2>
-                <div className="text-sm leading-relaxed text-neutral-300 select-text prose prose-invert prose-sm max-w-none">
+                <h2 className="text-xl font-semibold mb-2 select-text cursor-text">{data.title}</h2>
+                <div className="text-sm leading-relaxed text-neutral-300 select-text cursor-text prose prose-invert prose-sm max-w-none">
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{

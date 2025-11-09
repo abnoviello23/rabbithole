@@ -35,7 +35,7 @@ export function CustomEdge({
               pointerEvents: 'all',
               maxWidth: '240px',
             }}
-            className="nodrag nopan bg-neutral-900 border border-white/10 px-3 py-1.5 rounded-lg text-white text-base font-medium shadow-lg whitespace-normal break-words text-center"
+            className="nodrag nopan bg-neutral-900 border border-white/10 px-3 py-1.5 rounded-lg text-white text-base font-medium shadow-lg whitespace-normal break-words text-center select-text cursor-text"
           >
             {label}
           </div>
