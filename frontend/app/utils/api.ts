@@ -8,6 +8,7 @@ export interface GeneratedContent {
   body: string;
   image?: string;
   subtopics?: Subtopic[];
+  suggestedQuestions?: string[];
 }
 
 export interface NodeContext {
@@ -61,6 +62,7 @@ export async function generateContent(
       title: data.title || userQuery,
       body: data.response || '',
       subtopics: data.subtopics || [],
+      suggestedQuestions: data.suggested_questions || [],
       // image: PLACEHOLDER_IMAGES[Math.floor(Math.random() * PLACEHOLDER_IMAGES.length)],
     };
   } catch (error) {
