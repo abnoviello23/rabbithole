@@ -13,7 +13,7 @@ import { Node, Edge, Position } from 'reactflow';
 import { getDefaultSubtopicDimensions } from './subtopic-sizing';
 
 const RADIAL_CONFIG = {
-  GAP_FROM_PARENT: 200, // Gap between parent edge and subtopics (small for tight spacing)
+  GAP_FROM_PARENT: 100, // Gap between parent edge and subtopics (small for tight spacing)
   START_ANGLE: (45 * Math.PI) / 180, // 45 degrees (bottom-right diagonal)
   ANGLE_RANGE: Math.PI / 2, // 90 degrees - bottom quarter circle (45° to 135°)
 } as const;
