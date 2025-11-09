@@ -15,16 +15,31 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { CardNode, CardNodeData } from './CardNode';
 import { CustomEdge } from './CustomEdge';
+import { SessionManager } from './SessionManager';
 import { layoutNodes } from '../utils/layout';
 import { generateContent, NodeContext } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 
+const STORAGE_KEY = 'rabbithole-sessions';
+
+interface SessionData {
+  nodes: Node<CardNodeData>[];
+  edges: Edge[];
+}
+
+interface Sessions {
+  [sessionName: string]: SessionData;
+}
+
 export default function Canvas() {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState(INITIAL_EDGES);
+  const [currentSessionName, setCurrentSessionName] = useState<string>('New Session');
+  const [sessions, setSessions] = useState<string[]>([]);
+  const saveTimeoutRef = useRef<NodeJS.Timeout>(null);
 
   // Helper function to build path from root to a given node
   const buildPath = useCallback((targetNodeId: string, currentEdges: Edge[]): string[] => {
@@ -151,10 +166,144 @@ export default function Canvas() {
     []
   );
 
-  // Initialize nodes (let ReactFlow measure them first)
-  useEffect(() => {
+  // Generate session name from first edge label (initial query)
+  const generateSessionName = useCallback((currentEdges: Edge[]): string => {
+    const rootNode = nodes.find(n => n.data?.isRoot);
+    if (!rootNode) return 'New Session';
+
+    const firstEdge = currentEdges.find(e => e.source === rootNode.id);
+    if (firstEdge && firstEdge.label) {
+      const name = String(firstEdge.label).slice(0, 30);
+      return name.length < String(firstEdge.label).length ? name + '...' : name;
+    }
+
+    return 'New Session';
+  }, [nodes]);
+
+  // Load all sessions from localStorage
+  const loadSessionsList = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const allSessions: Sessions = JSON.parse(stored);
+        setSessions(Object.keys(allSessions));
+      }
+    } catch (error) {
+      console.error('Failed to load sessions list:', error);
+    }
+  }, []);
+
+  // Save current session to localStorage (debounced)
+  const saveSession = useCallback((name: string, currentNodes: Node<CardNodeData>[], currentEdges: Edge[]) => {
+    if (typeof window === 'undefined') return;
+
+    // Clear previous timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    // Debounce save by 500ms
+    saveTimeoutRef.current = setTimeout(() => {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        const allSessions: Sessions = stored ? JSON.parse(stored) : {};
+
+        allSessions[name] = {
+          nodes: currentNodes,
+          edges: currentEdges,
+        };
+
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(allSessions));
+        loadSessionsList();
+      } catch (error) {
+        console.error('Failed to save session:', error);
+      }
+    }, 500);
+  }, [loadSessionsList]);
+
+  // Load a specific session
+  const loadSession = useCallback((name: string) => {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const allSessions: Sessions = JSON.parse(stored);
+        const sessionData = allSessions[name];
+
+        if (sessionData) {
+          setNodes(sessionData.nodes || INITIAL_NODES);
+          setEdges(sessionData.edges || INITIAL_EDGES);
+          setCurrentSessionName(name);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load session:', error);
+    }
+  }, [setNodes, setEdges]);
+
+  // Create new session
+  const createNewSession = useCallback(() => {
     setNodes(INITIAL_NODES);
-  }, [setNodes]);
+    setEdges(INITIAL_EDGES);
+    setCurrentSessionName('New Session');
+  }, [setNodes, setEdges]);
+
+  // Delete a session
+  const deleteSession = useCallback((name: string) => {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const allSessions: Sessions = JSON.parse(stored);
+        delete allSessions[name];
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(allSessions));
+        loadSessionsList();
+      }
+    } catch (error) {
+      console.error('Failed to delete session:', error);
+    }
+  }, [loadSessionsList]);
+
+  // Initialize: Load sessions list and last session on mount
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    loadSessionsList();
+
+    // Try to load the first available session
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const allSessions: Sessions = JSON.parse(stored);
+        const sessionNames = Object.keys(allSessions);
+        if (sessionNames.length > 0) {
+          const lastSession = sessionNames[sessionNames.length - 1];
+          loadSession(lastSession);
+          return;
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load initial session:', error);
+    }
+
+    // If no sessions, initialize with default
+    setNodes(INITIAL_NODES);
+  }, [setNodes, loadSessionsList, loadSession]);
+
+  // Auto-save current session when nodes or edges change
+  useEffect(() => {
+    if (nodes.length > 0 || edges.length > 0) {
+      // Update session name based on first query
+      const newName = generateSessionName(edges);
+      if (newName !== currentSessionName && newName !== 'New Session') {
+        setCurrentSessionName(newName);
+      }
+
+      // Save to localStorage
+      saveSession(currentSessionName, nodes, edges);
+    }
+  }, [nodes, edges, currentSessionName, generateSessionName, saveSession]);
 
   // Re-layout whenever node dimensions or loading state changes
   useEffect(() => {
@@ -178,6 +327,14 @@ export default function Canvas() {
 
   return (
     <div style={{ height: '100vh', width: '100vw', background: '#0a0a0a' }}>
+      <SessionManager
+        currentSession={currentSessionName}
+        sessions={sessions}
+        onLoadSession={loadSession}
+        onCreateSession={createNewSession}
+        onDeleteSession={deleteSession}
+      />
+
       <ReactFlow
         nodes={nodes}
         edges={edges}
