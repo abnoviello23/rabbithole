@@ -4,3 +4,11 @@ openai
 python-dotenv
 numpy
 scikit-learn
+
+anthropic>=0.64.0
+claude-agent-sdk>=0.1.6
+
+# Web scraping and search
+exa-py>=1.16.0
+beautifulsoup4>=4.14.0
+requests>=2.32.0
