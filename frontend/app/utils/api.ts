@@ -62,3 +62,39 @@ export async function generateContent(
   }
 }
 
+export interface AutoModeResult {
+  node_id: string;
+  similarity: number;
+}
+
+export async function autoMode(
+  query: string,
+  nodes: Record<string, NodeContext>
+): Promise<AutoModeResult> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/automode`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query,
+        nodes,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Auto mode request failed: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return {
+      node_id: data.node_id,
+      similarity: data.similarity,
+    };
+  } catch (error) {
+    console.error('Failed to run auto mode:', error);
+    throw error;
+  }
+}
+

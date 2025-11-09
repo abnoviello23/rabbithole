@@ -20,9 +20,10 @@ import { CardNode, CardNodeData } from './CardNode';
 import { CustomEdge } from './CustomEdge';
 import { SessionManager } from './SessionManager';
 import { ChatPanel, ChatMessage } from './ChatPanel';
+import { FloatingChat } from './FloatingChat';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
-import { generateContent, NodeContext } from '../utils/api';
+import { generateContent, NodeContext, autoMode } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 
 const STORAGE_KEY = 'rabbithole-sessions';
@@ -203,6 +204,46 @@ export default function Canvas() {
     setSelectedNodeId(nodeId);
     setIsChatPanelOpen(true);
   }, []);
+
+  // Handle floating chat query submission
+  const handleFloatingChatQuery = useCallback(async (query: string) => {
+    try {
+      // Build context from all current nodes (excluding root)
+      const context: Record<string, NodeContext> = {};
+      nodes.forEach((node) => {
+        if (!node.data?.isRoot && node.data?.title && node.data?.body) {
+          context[node.id] = {
+            id: node.id,
+            title: node.data.title,
+            content: node.data.body,
+          };
+        }
+      });
+
+      // If no nodes exist yet, use root node
+      if (Object.keys(context).length === 0) {
+        const rootNode = nodes.find(n => n.data?.isRoot);
+        if (rootNode) {
+          await handleAddNote(rootNode.id, query);
+          return;
+        }
+      }
+
+      // Find the best matching node using auto mode
+      const result = await autoMode(query, context);
+
+      // Highlight and select the matched node
+      setSelectedNodeId(result.node_id);
+      setIsChatPanelOpen(true);
+
+      // Add a new note as a child of the matched node
+      await handleAddNote(result.node_id, query);
+
+    } catch (error) {
+      console.error('Failed to process floating chat query:', error);
+      throw error;
+    }
+  }, [nodes, handleAddNote]);
 
   const nodeTypes = useMemo(
     () => ({
@@ -459,6 +500,9 @@ export default function Canvas() {
         onClose={() => setIsChatPanelOpen(false)}
         lineage={buildLineage(selectedNodeId)}
       />
+
+      {/* Floating Chat Button */}
+      <FloatingChat onQuerySubmit={handleFloatingChatQuery} />
     </div>
   );
 }
