@@ -8,6 +8,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     TextBlock,
     ToolUseBlock,
+    ToolResultBlock,
 )
 try:
     from tools import summary_tools_server
@@ -72,10 +73,10 @@ def ensure_settings_file() -> None:
 async def process_assistant_message(message: AssistantMessage, text_outputs: list, on_event: Callable[[Dict[str, Any]], Awaitable[None]] | None = None) -> None:
     """
     Process assistant messages and extract content
-    
+
     Handles AssistantMessage datatype:
-    - AssistantMessage(content=[TextBlock(...)] | [ToolUseBlock(...)], model=str, parent_tool_use_id=None)
-    
+    - AssistantMessage(content=[TextBlock(...)] | [ToolUseBlock(...)] | [ToolResultBlock(...)], model=str, parent_tool_use_id=None)
+
     Args:
         message: AssistantMessage from Claude
         text_outputs: List to append text outputs to
@@ -143,7 +144,7 @@ async def process_assistant_message(message: AssistantMessage, text_outputs: lis
                     query = tool_input.get("query", "")
                     print(f"    → Exa Query: {query}")
                     details["query"] = query
-                    details["num_results"] = tool_input.get("numResults", 10)
+                    details["num_results"] = tool_input.get("numResults", 25)
                     details["search_type"] = tool_input.get("type", "deep")
                 elif "summarize_data" in tool_name:
                     style = tool_input.get("style", "concise")
@@ -159,6 +160,52 @@ async def process_assistant_message(message: AssistantMessage, text_outputs: lis
             # Stream tool event
             if on_event:
                 await on_event({"type": "tool", "name": tool_name, "details": details})
+
+        # Handle ToolResultBlock - contains tool results (e.g., Exa search results with URLs)
+        elif isinstance(block, ToolResultBlock):
+            tool_use_id = block.tool_use_id
+            content = block.content
+            is_error = block.is_error
+
+            if is_error:
+                logger.warning(f"Tool error for {tool_use_id}: {content}")
+            else:
+                # Try to parse Exa search results
+                try:
+                    import json
+                    # ToolResultBlock content is typically a list with text content
+                    if isinstance(content, list) and len(content) > 0:
+                        result_text = content[0].get('text', '') if isinstance(content[0], dict) else str(content[0])
+
+                        # Try to parse as JSON (Exa returns JSON with results)
+                        try:
+                            result_data = json.loads(result_text)
+
+                            # Check if this is an Exa result with URLs
+                            if 'results' in result_data and isinstance(result_data['results'], list):
+                                # Extract URLs and titles from Exa results
+                                sources = []
+                                for result in result_data['results']:
+                                    if 'url' in result:
+                                        sources.append({
+                                            'url': result['url'],
+                                            'title': result.get('title', result['url'])
+                                        })
+
+                                if sources:
+                                    logger.info(f"📚 Extracted {len(sources)} sources from Exa results")
+                                    # Send sources event to frontend
+                                    if on_event:
+                                        await on_event({
+                                            "type": "sources",
+                                            "sources": sources
+                                        })
+                        except json.JSONDecodeError:
+                            # Not JSON, skip
+                            pass
+                except Exception as e:
+                    logger.debug(f"Could not parse tool result: {e}")
+
         else:
             # Unknown block type - log it
             logger.warning(f"Unknown block type: {type(block)}")

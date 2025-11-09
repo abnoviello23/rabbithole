@@ -16,7 +16,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 
 import { useCallback, useEffect, useMemo, useState, useRef, createContext, useContext } from 'react';
-import { CardNode, CardNodeData, getClusterColor, assignClusterColors } from './CardNode';
+import { CardNode, CardNodeData, assignClusterColors } from './CardNode';
 import { CustomEdge } from './CustomEdge';
 import { SessionManager } from './SessionManager';
 import { ChatPanel, ChatMessage } from './ChatPanel';
@@ -24,16 +24,20 @@ import { FloatingChat } from './FloatingChat';
 import { ClusterLegend } from './ClusterLegend';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
-import { applyRadialLayout } from '../utils/layout-elk';
-import { generateContent, NodeContext, autoMode, Subtopic, clusterNodes, ClusterResult } from '../utils/api';
-import { calculateSubtopicDimensions } from '../utils/subtopic-sizing';
+import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 
 const STORAGE_KEY = 'rabbithole-sessions';
 
+// Helper function to remove emojis from text
+function stripEmojis(text: string): string {
+  return text.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
+}
+
 // Create context for dynamic props
 interface CanvasContextType {
   onAddNote: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
+  onAgentRequest: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
   onNodeClick: (nodeId: string) => void;
   activePathNodeIds: Set<string>;
   selectedNodeId: string | null;
@@ -48,11 +52,12 @@ const CanvasContext = createContext<CanvasContextType | null>(null);
 function CardNodeWrapper(props: any) {
   const context = useContext(CanvasContext);
   if (!context) return null;
-  
+
   return (
     <CardNode
       {...props}
       onAddNote={context.onAddNote}
+      onAgentRequest={context.onAgentRequest}
       onNodeClick={context.onNodeClick}
       isInActivePath={context.activePathNodeIds.has(props.id)}
       isSelected={props.id === context.selectedNodeId}
@@ -284,6 +289,192 @@ export default function Canvas() {
     }
   }, [setNodes, setEdges, buildPath, buildContext, nodes, edges]);
 
+  const handleAgentRequest = useCallback(async (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => {
+    const nodeId = `node-${Date.now()}`;
+    const edgeId = `edge-${Date.now()}`;
+
+    // Create loading node with agent-specific message
+    const loadingNode: Node<CardNodeData> = {
+      id: nodeId,
+      type: 'card',
+      data: {
+        title: 'AI Agent Researching...',
+        body: '',
+        statusUpdates: ['Initializing Claude AI agent with web search capabilities...'],
+        isLoading: true,
+        color,
+      },
+      position: { x: 0, y: 0 },
+    };
+
+    const newEdge: Edge = {
+      id: edgeId,
+      source: sourceId,
+      target: nodeId,
+      type: 'custom',
+      label: userQuery,
+      style: color ? { stroke: color, strokeWidth: 2 } : { stroke: '#8B5CF6', strokeWidth: 2 },
+      markerEnd: color ? { type: MarkerType.ArrowClosed, color } : { type: MarkerType.ArrowClosed, color: '#8B5CF6' },
+      data: { color: color || '#8B5CF6', userQuery, selectedContext },
+    };
+
+    // Add edge and loading node with immediate layout
+    let currentEdges: Edge[] = [];
+    let currentNodes: Node<CardNodeData>[] = [];
+
+    setEdges((edges) => {
+      currentEdges = [...edges, newEdge];
+      setNodes((ns) => {
+        currentNodes = [...ns, loadingNode];
+        return layoutNodes(currentNodes, currentEdges);
+      });
+      return currentEdges;
+    });
+
+    // Track status messages and sources count
+    const statusMessages: string[] = ['Initializing Claude AI agent with web search capabilities...'];
+    let totalSources = 0;
+    const sources: Source[] = [];
+
+    try {
+      // Build path from root to source node
+      const pathIds = buildPath(sourceId, currentEdges);
+      const path = pathIds.join('/');
+
+      // Build context from all nodes in path
+      const context = buildContext(pathIds, currentNodes);
+
+      // Research with agent, streaming updates
+      const result = await researchWithAgent(
+        nodeId,
+        userQuery,
+        path,
+        context,
+        selectedContext,
+        (event: AgentEvent) => {
+          // Handle streaming events
+          if (event.type === 'status' && event.text) {
+            const cleanText = stripEmojis(event.text);
+            if (cleanText) {
+              statusMessages.push(cleanText);
+              // Update node with latest status
+              setNodes((ns) =>
+                ns.map((n) =>
+                  n.id === nodeId
+                    ? {
+                        ...n,
+                        data: {
+                          ...n.data,
+                          statusUpdates: [...statusMessages],
+                          isLoading: true,
+                        },
+                      }
+                    : n
+                )
+              );
+            }
+          } else if (event.type === 'tool' && event.name) {
+            // Track Exa search tool invocations
+            if (event.name.includes('exa') && event.details?.num_results) {
+              totalSources += event.details.num_results;
+            }
+
+            const toolMessage = stripEmojis(`Using: ${event.name}${event.details?.query ? ` - "${event.details.query}"` : ''}`);
+            statusMessages.push(toolMessage);
+            // Update node with tool usage
+            setNodes((ns) =>
+              ns.map((n) =>
+                n.id === nodeId
+                  ? {
+                      ...n,
+                      data: {
+                        ...n.data,
+                        statusUpdates: [...statusMessages],
+                        isLoading: true,
+                      },
+                    }
+                  : n
+              )
+            );
+          } else if (event.type === 'sources' && event.sources) {
+            // Received actual URLs from Exa search results
+            sources.push(...event.sources);
+            console.log(`📚 Received ${event.sources.length} sources from backend, total: ${sources.length}`);
+          }
+        }
+      );
+
+      console.log('Agent research completed:', result);
+      console.log('Total sources crawled:', totalSources);
+      console.log('Sources collected:', sources);
+
+      // Update node with final result
+      setNodes((ns) => {
+        const updatedNodes = ns.map((n) =>
+          n.id === nodeId
+            ? {
+                ...n,
+                data: {
+                  title: result.title,
+                  body: result.body,
+                  suggestedQuestions: result.suggested_questions,
+                  sourcesCount: totalSources > 0 ? totalSources : undefined,
+                  sources: sources.length > 0 ? sources : undefined,
+                  isLoading: false,
+                  color: color || '#8B5CF6',
+                  statusUpdates: undefined, // Clear status updates on completion
+                },
+              }
+            : n
+        );
+
+        // Run clustering on all nodes
+        const allNodesContext: Record<string, NodeContext> = {};
+        updatedNodes.forEach((node) => {
+          if (!node.data?.isRoot && node.data?.title && node.data?.body) {
+            allNodesContext[node.id] = {
+              id: node.id,
+              title: node.data.title,
+              content: node.data.body,
+            };
+          }
+        });
+
+        // Call clustering asynchronously
+        if (Object.keys(allNodesContext).length > 1) {
+          clusterNodes(allNodesContext)
+            .then((clusters) => {
+              setClusterData(clusters);
+            })
+            .catch((error) => {
+              console.error('Clustering failed:', error);
+            });
+        }
+
+        return updatedNodes;
+      });
+    } catch (error) {
+      console.error('Failed to research with agent:', error);
+      // Update node with error message
+      setNodes((ns) =>
+        ns.map((n) =>
+          n.id === nodeId
+            ? {
+                ...n,
+                data: {
+                  ...n.data,
+                  title: 'Agent Research Failed',
+                  body: `❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                  isLoading: false,
+                  statusUpdates: undefined,
+                },
+              }
+            : n
+        )
+      );
+    }
+  }, [setNodes, setEdges, buildPath, buildContext, nodes, edges]);
+
   // Calculate active path node IDs
   const activePathNodeIds = useMemo(() => {
     if (!selectedNodeId) return new Set<string>();
@@ -347,6 +538,7 @@ export default function Canvas() {
   const contextValue = useMemo(
     () => ({
       onAddNote: handleAddNote,
+      onAgentRequest: handleAgentRequest,
       onNodeClick: handleNodeClick,
       activePathNodeIds,
       selectedNodeId,
@@ -354,7 +546,7 @@ export default function Canvas() {
       edges,
       clusterData,
     }),
-    [handleAddNote, handleNodeClick, activePathNodeIds, selectedNodeId, isChatPanelOpen, edges, clusterData]
+    [handleAddNote, handleAgentRequest, handleNodeClick, activePathNodeIds, selectedNodeId, isChatPanelOpen, edges, clusterData]
   );
 
   // Generate session name from first edge label (initial query)

@@ -138,3 +138,98 @@ export async function clusterNodes(
 }
 
 
+export interface Source {
+  url: string;
+  title?: string;
+}
+
+export interface AgentEvent {
+  type: 'status' | 'tool' | 'final' | 'error' | 'sources';
+  text?: string;
+  name?: string;
+  details?: any;
+  title?: string;
+  response?: string;
+  suggested_questions?: string[];
+  message?: string;
+  sources?: Source[];
+}
+
+export interface AgentResearchResult {
+  title: string;
+  body: string;
+  suggested_questions: string[];
+}
+
+export async function researchWithAgent(
+  nodeId: string,
+  userQuery: string,
+  path: string,
+  context: Record<string, NodeContext>,
+  selectedContext?: string,
+  onEvent?: (event: AgentEvent) => void
+): Promise<AgentResearchResult> {
+  return new Promise((resolve, reject) => {
+    const WS_BASE_URL = API_BASE_URL.replace('http://', 'ws://').replace('https://', 'wss://');
+    const ws = new WebSocket(`${WS_BASE_URL}/ws/research`);
+
+    let finalResult: AgentResearchResult | null = null;
+
+    ws.onopen = () => {
+      console.log('🔌 WebSocket connected');
+      // Send initial request
+      ws.send(JSON.stringify({
+        nodeId,
+        userQuery,
+        path,
+        context,
+        selectedContext,
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data: AgentEvent = JSON.parse(event.data);
+        console.log('📨 Received event:', data.type, data);
+
+        // Call the event callback if provided
+        if (onEvent) {
+          onEvent(data);
+        }
+
+        // Handle final event
+        if (data.type === 'final') {
+          finalResult = {
+            title: data.title || userQuery,
+            body: data.response || '',
+            suggested_questions: data.suggested_questions || [],
+          };
+          ws.close();
+        }
+
+        // Handle error event
+        if (data.type === 'error') {
+          ws.close();
+          reject(new Error(data.message || 'Agent research failed'));
+        }
+      } catch (error) {
+        console.error('Failed to parse WebSocket message:', error);
+      }
+    };
+
+    ws.onerror = (error) => {
+      console.error('❌ WebSocket error:', error);
+      reject(new Error('WebSocket connection failed'));
+    };
+
+    ws.onclose = () => {
+      console.log('🔌 WebSocket closed');
+      if (finalResult) {
+        resolve(finalResult);
+      } else {
+        reject(new Error('WebSocket closed without final result'));
+      }
+    };
+  });
+}
+

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { Handle, Position, NodeProps, NodeToolbar, useReactFlow, Edge } from 'reactflow';
-import { MessageSquarePlus, ExternalLink } from 'lucide-react';
+import { MessageSquarePlus, ExternalLink, Sparkles } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -137,6 +137,11 @@ export interface Subtopic {
   category: string;
 }
 
+export interface Source {
+  url: string;
+  title?: string;
+}
+
 export interface CardNodeData {
   title: string;
   body: string;
@@ -148,10 +153,14 @@ export interface CardNodeData {
   color?: string;
   suggestedQuestions?: string[];
   subtopics?: Subtopic[];
+  statusUpdates?: string[]; // Real-time status updates from agent
+  sourcesCount?: number; // Number of sources researched (for agent nodes)
+  sources?: Source[]; // List of source URLs (for agent nodes)
 }
 
 interface CardNodeComponentProps extends NodeProps<CardNodeData> {
   onAddNote?: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
+  onAgentRequest?: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
   onNodeClick?: (nodeId: string) => void;
   isInActivePath?: boolean;
   isSelected?: boolean;
@@ -165,9 +174,12 @@ interface PersistentHighlight {
   nodeId: string;
 }
 
-export function CardNode({ data, id, onAddNote, onNodeClick, isInActivePath, isSelected, isChatPanelOpen, edges }: CardNodeComponentProps) {
+export function CardNode({ data, id, onAddNote, onAgentRequest, onNodeClick, isInActivePath, isSelected, isChatPanelOpen, edges }: CardNodeComponentProps) {
   const [show, setShow] = useState(false);
+  const [showAgent, setShowAgent] = useState(false);
+  const [showSources, setShowSources] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
+  const agentToolbarRef = useRef<HTMLDivElement>(null);
   const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string; range: Range; color: string } | null>(null);
   const [persistentHighlights, setPersistentHighlights] = useState<PersistentHighlight[]>([]);
   const selectionPopupRef = useRef<HTMLDivElement>(null);
@@ -338,18 +350,21 @@ useEffect(() => {
       if (show && toolbarRef.current && !toolbarRef.current.contains(target)) {
         setShow(false);
       }
+      if (showAgent && agentToolbarRef.current && !agentToolbarRef.current.contains(target)) {
+        setShowAgent(false);
+      }
       if (selectionPopup && selectionPopupRef.current && !selectionPopupRef.current.contains(target)) {
         setSelectionPopup(null);
       }
     };
 
-    if (show || selectionPopup) {
+    if (show || showAgent || selectionPopup) {
       document.addEventListener('mousedown', handleClickOutside, true);
       return () => {
         document.removeEventListener('mousedown', handleClickOutside, true);
       };
     }
-  }, [show, selectionPopup]);
+  }, [show, showAgent, selectionPopup]);
 
   return (
     <>
@@ -385,6 +400,30 @@ useEffect(() => {
                 onAddNote?.(id, e.currentTarget.value.trim());
                 e.currentTarget.value = '';
                 setShow(false);
+              }
+            }}
+          />
+        </div>
+      </NodeToolbar>
+
+      <NodeToolbar isVisible={showAgent} position={Position.Bottom}>
+        <div
+          ref={agentToolbarRef}
+          className="rounded-xl border border-purple-500/30 bg-gradient-to-br from-purple-900/90 to-blue-900/90 backdrop-blur-sm text-neutral-100 shadow-xl p-2 w-64"
+        >
+          <div className="flex items-center gap-2 mb-2 px-1">
+            <Sparkles className="w-4 h-4 text-purple-400" />
+            <span className="text-xs text-purple-300 font-semibold">AI Agent Research</span>
+          </div>
+          <input
+            autoFocus
+            placeholder="What should I research?"
+            className="w-full rounded-lg bg-black/30 border border-purple-500/20 px-2 py-1 text-sm outline-none focus:border-purple-500/40 transition-colors"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && e.currentTarget.value.trim()) {
+                onAgentRequest?.(id, e.currentTarget.value.trim(), undefined, '#8B5CF6');
+                e.currentTarget.value = '';
+                setShowAgent(false);
               }
             }}
           />
@@ -469,10 +508,30 @@ useEffect(() => {
               )}
             </div>
           ) : data.isLoading ? (
-            <div className="p-6 flex items-center justify-center flex-1">
-              <div className="flex flex-col items-center gap-4">
-                <div className="w-12 h-12 border-4 border-neutral-700 border-t-neutral-400 rounded-full animate-spin" />
-                <p className="text-sm text-neutral-400">Generating content...</p>
+            <div className="p-6 flex flex-col gap-4 flex-1">
+              {/* Status updates list - no scrolling, expands node height */}
+              {data.statusUpdates && data.statusUpdates.length > 0 && (
+                <div className="space-y-2">
+                  {data.statusUpdates.map((status, idx) => (
+                    <div
+                      key={idx}
+                      className="text-xs text-neutral-300 bg-neutral-800/50 rounded-lg px-3 py-2 animate-fade-in"
+                      style={{
+                        animationDelay: `${idx * 50}ms`,
+                      }}
+                    >
+                      {status}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Loading spinner */}
+              <div className="flex flex-col items-center gap-3 py-4">
+                <div className="w-12 h-12 border-4 border-purple-700/30 border-t-purple-400 rounded-full animate-spin" />
+                <p className="text-sm text-purple-300 font-medium">
+                  {data.statusUpdates && data.statusUpdates.length > 0 ? 'Processing...' : 'Generating content...'}
+                </p>
               </div>
             </div>
           ) : (
@@ -573,6 +632,56 @@ useEffect(() => {
                   </div>
                 </div>
               )}
+
+              {/* Sources Badge (for agent-researched nodes) */}
+              {data.sourcesCount && data.sourcesCount > 0 && (
+                <div className="px-6 pb-4">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowSources(!showSources);
+                    }}
+                    className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-purple-900/20 border border-purple-500/20 hover:bg-purple-900/30 transition-colors cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                    <span className="text-xs text-purple-300 font-medium">
+                      Researched from {data.sourcesCount} source{data.sourcesCount !== 1 ? 's' : ''}
+                    </span>
+                    <span className="text-xs text-purple-400 ml-auto">
+                      {showSources ? '▼' : '▶'}
+                    </span>
+                  </button>
+
+                  {/* Expandable sources list */}
+                  {showSources && data.sources && data.sources.length > 0 && (
+                    <div className="mt-3 space-y-1.5 max-h-64 overflow-y-auto">
+                      {data.sources.map((source, idx) => (
+                        <a
+                          key={idx}
+                          href={source.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-start gap-2 p-2 rounded-lg bg-neutral-800/50 hover:bg-neutral-800 transition-colors group"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <span className="text-[10px] text-purple-400 font-mono mt-0.5">
+                            {idx + 1}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-neutral-300 group-hover:text-neutral-100 truncate">
+                              {source.title || source.url}
+                            </p>
+                            <p className="text-[10px] text-neutral-500 truncate mt-0.5">
+                              {source.url}
+                            </p>
+                          </div>
+                          <ExternalLink className="w-3 h-3 text-neutral-500 group-hover:text-purple-400 flex-shrink-0 mt-0.5" />
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -627,15 +736,32 @@ useEffect(() => {
         )}
         </div>
 
-        {/* Follow-up question button - outside node */}
+        {/* Action buttons - outside node */}
         {!data.isLoading && !data.isRoot && !data.isSubtopic && (
-          <div
-            onClick={() => setShow(!show)}
-            className="absolute left-1/2 -translate-x-1/2 w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center cursor-pointer transition-colors nopan"
-            style={{ top: '100%', marginTop: '8px' }}
-            title="Ask a follow-up question"
-          >
-            <MessageSquarePlus className="w-6 h-6" />
+          <div className="absolute left-1/2 -translate-x-1/2 flex gap-2" style={{ top: '100%', marginTop: '8px' }}>
+            {/* Follow-up question button */}
+            <div
+              onClick={() => {
+                setShow(!show);
+                setShowAgent(false);
+              }}
+              className="w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center cursor-pointer transition-all nopan hover:scale-110"
+              title="Ask a follow-up question"
+            >
+              <MessageSquarePlus className="w-6 h-6" />
+            </div>
+
+            {/* AI Agent research button */}
+            <div
+              onClick={() => {
+                setShowAgent(!showAgent);
+                setShow(false);
+              }}
+              className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-600/20 to-blue-600/20 hover:from-purple-600/30 hover:to-blue-600/30 border border-purple-500/30 flex items-center justify-center cursor-pointer transition-all nopan hover:scale-110"
+              title="Research with AI Agent"
+            >
+              <Sparkles className="w-6 h-6 text-purple-400" />
+            </div>
           </div>
         )}
       </div>
