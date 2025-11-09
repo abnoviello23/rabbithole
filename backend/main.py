@@ -10,10 +10,14 @@ import numpy as np
 from typing import Dict
 from sklearn.cluster import KMeans
 import math
+import hashlib
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Cache for node embeddings: {cache_key: embedding_array}
+node_embedding_cache: Dict[str, np.ndarray] = {}
 
 # Load .env from the backend directory (where this file is located)
 env_path = Path(__file__).parent / '.env'
@@ -30,6 +34,12 @@ app.add_middleware(
 )
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def get_node_cache_key(node_id: str, node_text: str) -> str:
+    """Generate a cache key based on node ID and content hash."""
+    content_hash = hashlib.md5(node_text.encode()).hexdigest()
+    return f"{node_id}:{content_hash}"
 
 
 class Node(BaseModel):
@@ -125,19 +135,28 @@ async def automode_endpoint(request: AutoModeRequest):
             # Use query if available, otherwise use title
             node_query = node.query if node.query else node.title
             node_text = f"{node_query} {node.content}"
-            
-            # Get embedding for this node
-            node_embedding_response = client.embeddings.create(
-                model="text-embedding-3-small",
-                input=node_text
-            )
-            node_embedding = np.array(node_embedding_response.data[0].embedding)
-            
+
+            # Check cache first
+            cache_key = get_node_cache_key(node_id, node_text)
+            if cache_key in node_embedding_cache:
+                node_embedding = node_embedding_cache[cache_key]
+                logger.info(f"Using cached embedding for node {node_id}")
+            else:
+                # Get embedding for this node
+                node_embedding_response = client.embeddings.create(
+                    model="text-embedding-3-small",
+                    input=node_text
+                )
+                node_embedding = np.array(node_embedding_response.data[0].embedding)
+                # Store in cache
+                node_embedding_cache[cache_key] = node_embedding
+                logger.info(f"Cached new embedding for node {node_id}")
+
             # Calculate cosine similarity
             similarity = np.dot(query_embedding, node_embedding) / (
                 np.linalg.norm(query_embedding) * np.linalg.norm(node_embedding)
             )
-            
+
             # Update best match if this is more similar
             if similarity > best_similarity:
                 best_similarity = similarity
