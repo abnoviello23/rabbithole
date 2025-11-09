@@ -19,6 +19,8 @@ interface ChatPanelProps {
   isOpen: boolean;
   onClose: () => void;
   lineage: ChatMessage[];
+  activeNodeId?: string | null;
+  liveLogsByNode?: Record<string, string[]>;
 }
 
 interface MessageHighlight {
@@ -27,8 +29,9 @@ interface MessageHighlight {
   color: string;
 }
 
-export function ChatPanel({ isOpen, onClose, lineage }: ChatPanelProps) {
+export function ChatPanel({ isOpen, onClose, lineage, activeNodeId, liveLogsByNode }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const liveLogsScrollRef = useRef<HTMLDivElement>(null);
   const messageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [highlights, setHighlights] = useState<MessageHighlight[]>([]);
 
@@ -38,6 +41,13 @@ export function ChatPanel({ isOpen, onClose, lineage }: ChatPanelProps) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [lineage]);
+
+  // Auto-scroll live logs when they update
+  useEffect(() => {
+    if (liveLogsScrollRef.current) {
+      liveLogsScrollRef.current.scrollTop = liveLogsScrollRef.current.scrollHeight;
+    }
+  }, [liveLogsByNode, activeNodeId]);
 
   // Utility function to find text in DOM and create a Range
   const findTextRange = (searchText: string, containerNode: HTMLElement | null): Range | null => {
@@ -162,6 +172,25 @@ export function ChatPanel({ isOpen, onClose, lineage }: ChatPanelProps) {
           <X className="w-5 h-5" />
         </button>
       </div>
+
+      {/* Live research logs */}
+      {activeNodeId && liveLogsByNode && liveLogsByNode[activeNodeId] && liveLogsByNode[activeNodeId].length > 0 && (
+        <div className="border-b border-white/10 bg-neutral-950/50">
+          <div className="p-3 border-b border-white/5">
+            <h3 className="text-sm font-semibold text-emerald-400">🔴 Live Research</h3>
+          </div>
+          <div
+            ref={liveLogsScrollRef}
+            className="p-3 overflow-y-auto max-h-64 font-mono text-xs text-neutral-300 space-y-1"
+          >
+            {liveLogsByNode[activeNodeId].map((log, idx) => (
+              <div key={idx} className="whitespace-pre-wrap opacity-80 hover:opacity-100 transition-opacity">
+                {log}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Chat messages */}
       <div ref={scrollRef} className="flex flex-col gap-4 p-4 overflow-y-auto flex-1">

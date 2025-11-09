@@ -1,0 +1,9 @@
+{
+  "enableAllProjectMcpServers": true,
+  "permissions": {
+    "allow": [
+      "mcp__exa",
+      "mcp__openai-summary-tools"
+    ]
+  }
+}

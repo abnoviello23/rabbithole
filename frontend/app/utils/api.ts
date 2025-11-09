@@ -24,6 +24,7 @@ const PLACEHOLDER_IMAGES = [
 ];
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
 
 export async function generateContent(
   userQuery: string,
@@ -60,5 +61,120 @@ export async function generateContent(
     console.error('Failed to generate content:', error);
     throw error;
   }
+}
+
+export interface StreamEvent {
+  type: 'status' | 'tool' | 'final' | 'error';
+  text?: string;
+  name?: string;
+  details?: Record<string, any>;
+  title?: string;
+  response?: string;
+  suggested_questions?: string[];
+  message?: string;
+}
+
+export interface ResearchStreamCallbacks {
+  onStatus?: (text: string) => void;
+  onTool?: (name: string, details: Record<string, any>) => void;
+  onFinal?: (title: string, response: string, suggestedQuestions: string[]) => void;
+  onError?: (message: string) => void;
+}
+
+export interface ResearchStreamHandle {
+  close: () => void;
+}
+
+export function startResearchStream(
+  nodeId: string,
+  userQuery: string,
+  path: string,
+  context: Record<string, NodeContext>,
+  selectedContext?: string,
+  callbacks?: ResearchStreamCallbacks
+): ResearchStreamHandle {
+  const ws = new WebSocket(`${WS_BASE_URL}/ws/research`);
+  
+  ws.onopen = () => {
+    // Send initial request
+    ws.send(JSON.stringify({
+      nodeId,
+      userQuery,
+      selectedContext,
+      path,
+      context,
+    }));
+  };
+  
+  ws.onmessage = (event) => {
+    try {
+      const data: StreamEvent = JSON.parse(event.data);
+      console.log('📨 WebSocket event received:', data.type, data);
+      
+      switch (data.type) {
+        case 'status':
+          if (data.text && callbacks?.onStatus) {
+            callbacks.onStatus(data.text);
+          }
+          break;
+          
+        case 'tool':
+          if (data.name && callbacks?.onTool) {
+            callbacks.onTool(data.name, data.details || {});
+          }
+          break;
+          
+        case 'final':
+          console.log('🎯 Final event received:', { 
+            hasTitle: !!data.title, 
+            hasResponse: !!data.response,
+            title: data.title,
+            response: data.response?.substring(0, 50)
+          });
+          if (callbacks?.onFinal) {
+            // Call even if title or response is missing (use defaults)
+            callbacks.onFinal(
+              data.title || 'Response',
+              data.response || 'No response generated',
+              data.suggested_questions || []
+            );
+          }
+          ws.close();
+          break;
+          
+        case 'error':
+          console.error('❌ Error event received:', data.message);
+          if (data.message && callbacks?.onError) {
+            callbacks.onError(data.message);
+          }
+          ws.close();
+          break;
+          
+        default:
+          console.warn('⚠️ Unknown event type:', data.type);
+      }
+    } catch (error) {
+      console.error('Failed to parse WebSocket message:', error, event.data);
+    }
+  };
+  
+  ws.onerror = (error) => {
+    console.error('WebSocket error:', error);
+    if (callbacks?.onError) {
+      callbacks.onError('WebSocket connection error');
+    }
+  };
+  
+  ws.onclose = () => {
+    console.log('WebSocket closed');
+  };
+  
+  return {
+    close: () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+    },
+  };
 }
 

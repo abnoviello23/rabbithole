@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 import numpy as np
 from typing import Dict
+import json
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -57,6 +58,15 @@ class GenerateResponse(BaseModel):
 
 @app.post("/generate")
 async def generate_endpoint(request: GenerateRequest):
+    logger.info("="*80)
+    logger.info("⚡ QUICK MODE /generate request")
+    logger.info(f"   Query: {request.user_query}")
+    logger.info(f"   Path: {request.path if request.path else 'root'}")
+    logger.info(f"   Context nodes: {len(request.context)}")
+    if request.selected_context:
+        logger.info(f"   Selected: \"{request.selected_context[:50]}...\"")
+    logger.info("="*80)
+    
     try:
         system_prompt = (
             "You are an AI assistant designed for mind map-style conversations. "
@@ -78,6 +88,7 @@ async def generate_endpoint(request: GenerateRequest):
 
         prompt += "\nProvide a response with a title (brief summary) and a detailed response to the query. Also provide 2 suggested follow-up questions that would help the user explore this topic further."
 
+        logger.info("🤖 Calling OpenAI API (quick mode)...")
         response = client.beta.chat.completions.parse(
             model="gpt-4o-search-preview-2025-03-11",
             messages=[
@@ -88,6 +99,8 @@ async def generate_endpoint(request: GenerateRequest):
         )
 
         parsed_response = response.choices[0].message.parsed
+        logger.info(f"✅ Quick response complete: {parsed_response.title}")
+        logger.info("="*80)
 
         return {
             "title": parsed_response.title,
@@ -96,7 +109,9 @@ async def generate_endpoint(request: GenerateRequest):
         }
 
     except Exception as e:
-        logger.error(f"Error generating content: {str(e)}")
+        logger.error(f"❌ Error generating content: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -148,6 +163,105 @@ async def automode_endpoint(request: AutoModeRequest):
     except Exception as e:
         logger.error(f"Error in automode endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.websocket("/ws/research")
+async def research_websocket(websocket: WebSocket):
+    """
+    WebSocket endpoint for streaming research agent results
+    """
+    client_host = websocket.client.host if websocket.client else "unknown"
+    logger.info(f"📡 New WebSocket connection from {client_host}")
+    
+    await websocket.accept()
+    logger.info("✅ WebSocket connection accepted")
+    
+    try:
+        # Receive initial request from client
+        logger.info("⏳ Waiting for initial request...")
+        data = await websocket.receive_text()
+        request_data = json.loads(data)
+        
+        node_id = request_data.get("nodeId")
+        user_query = request_data.get("userQuery")
+        selected_context = request_data.get("selectedContext")
+        path = request_data.get("path", "")
+        context = request_data.get("context", {})
+        
+        logger.info("="*80)
+        logger.info(f"🔍 RESEARCH REQUEST")
+        logger.info(f"   Node ID: {node_id}")
+        logger.info(f"   Query: {user_query}")
+        logger.info(f"   Path: {path if path else 'root'}")
+        logger.info(f"   Context nodes: {len(context)}")
+        if selected_context:
+            logger.info(f"   Selected: \"{selected_context[:50]}...\"")
+        logger.info("="*80)
+        
+        # Import the streaming function
+        from agent import run_research_stream
+        
+        # Track events sent
+        event_count = {"status": 0, "tool": 0, "final": 0, "error": 0}
+        
+        # Define event callback
+        async def send_event(event: dict):
+            event_type = event.get("type", "unknown")
+            event_count[event_type] = event_count.get(event_type, 0) + 1
+            
+            # Log event summary
+            if event_type == "status":
+                text = event.get("text", "")[:60]
+                logger.info(f"📤 Sending status #{event_count['status']}: {text}...")
+            elif event_type == "tool":
+                tool_name = event.get("name", "unknown")
+                logger.info(f"📤 Sending tool #{event_count['tool']}: {tool_name}")
+            elif event_type == "final":
+                title = event.get("title", "")
+                logger.info(f"📤 Sending final response: {title}")
+            elif event_type == "error":
+                msg = event.get("message", "")
+                logger.error(f"📤 Sending error: {msg}")
+            
+            await websocket.send_text(json.dumps(event))
+        
+        # Run the research stream
+        logger.info("🚀 Starting research stream...")
+        await run_research_stream(
+            query=user_query,
+            path=path,
+            context=context,
+            on_event=send_event
+        )
+        
+        logger.info("="*80)
+        logger.info(f"✅ RESEARCH COMPLETED")
+        logger.info(f"   Total events: {sum(event_count.values())}")
+        logger.info(f"   - Status: {event_count.get('status', 0)}")
+        logger.info(f"   - Tool: {event_count.get('tool', 0)}")
+        logger.info(f"   - Final: {event_count.get('final', 0)}")
+        logger.info(f"   - Error: {event_count.get('error', 0)}")
+        logger.info("="*80)
+        
+    except WebSocketDisconnect:
+        logger.warning(f"⚠️  WebSocket disconnected by client")
+    except Exception as e:
+        logger.error(f"❌ WebSocket error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": str(e)
+            }))
+        except:
+            logger.error("Failed to send error message to client")
+    finally:
+        try:
+            await websocket.close()
+            logger.info(f"🔌 WebSocket connection closed")
+        except:
+            pass
 
 
 @app.get("/")

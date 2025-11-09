@@ -3,3 +3,24 @@ uvicorn[standard]
 openai
 python-dotenv
 numpy
+# Core dependencies for research_agent
+anthropic>=0.64.0
+openai>=1.99.0
+python-dotenv>=1.0.0
+claude-agent-sdk>=0.1.6
+
+# Web scraping and search
+exa-py>=1.16.0
+beautifulsoup4>=4.14.0
+requests>=2.32.0
+
+# Optional: Audio generation (Cartesia)
+# cartesia>=2.0.0
+
+# Database and storage (if needed)
+# supabase>=2.18.0
+# pinecone>=7.3.0
+
+# Development
+# pytest>=7.0.0
+

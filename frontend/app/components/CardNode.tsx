@@ -25,6 +25,7 @@ export interface CardNodeData {
   isLoading?: boolean;
   isRoot?: boolean;
   color?: string;
+  hasLogs?: boolean; // Whether this node has research logs
 }
 
 interface CardNodeComponentProps extends NodeProps<CardNodeData> {
@@ -34,6 +35,7 @@ interface CardNodeComponentProps extends NodeProps<CardNodeData> {
   isSelected?: boolean;
   isChatPanelOpen?: boolean;
   edges?: Edge[];
+  liveLogs?: string[];
 }
 
 interface PersistentHighlight {
@@ -42,19 +44,46 @@ interface PersistentHighlight {
   nodeId: string;
 }
 
-export function CardNode({ data, id, onAddNote, onNodeClick, isInActivePath, isSelected, isChatPanelOpen, edges }: CardNodeComponentProps) {
+// Format a log message with clean styling
+function formatLogMessage(log: string): { type: string; content: string; details?: string } {
+  // Remove emoji prefixes and clean up
+  const cleanLog = log.replace(/^🤖 Claude: /, '').replace(/^🛠️\s*Using tool: /, '');
+  
+  if (log.includes('Using tool:') || log.includes('🛠️')) {
+    const toolMatch = cleanLog.match(/^([^\n]+)/);
+    const toolName = toolMatch ? toolMatch[1].replace('mcp__exa__web_search_exa', 'Web Search').replace('mcp__openai-summary-tools__', '').replace(/_/g, ' ') : 'Tool';
+    const details = log.split('\n').slice(1).join('\n').trim();
+    return { type: 'tool', content: toolName, details };
+  } else if (log.startsWith('🤖') || log.includes('Claude:')) {
+    return { type: 'thinking', content: cleanLog };
+  } else if (log.startsWith('❌')) {
+    return { type: 'error', content: log.replace('❌ Error: ', '') };
+  } else {
+    return { type: 'info', content: log };
+  }
+}
+
+export function CardNode({ data, id, onAddNote, onNodeClick, isInActivePath, isSelected, isChatPanelOpen, edges, liveLogs }: CardNodeComponentProps) {
   const [show, setShow] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const [selectionPopup, setSelectionPopup] = useState<{ x: number; y: number; text: string; range: Range; color: string } | null>(null);
   const [persistentHighlights, setPersistentHighlights] = useState<PersistentHighlight[]>([]);
   const selectionPopupRef = useRef<HTMLDivElement>(null);
+  const logsEndRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const nodeRef = useRef<HTMLDivElement>(null);
   const { getZoom } = useReactFlow();
 
-useEffect(() => {
-  console.log(">> CardNode: ", id, data);
-}, [id, data]);
+  useEffect(() => {
+    console.log(">> CardNode: ", id, data);
+  }, [id, data]);
+
+  // Auto-scroll logs to bottom when new logs arrive
+  useEffect(() => {
+    if (logsEndRef.current && liveLogs && liveLogs.length > 0) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [liveLogs]);
 
   // Utility function to find text in DOM and create a Range
   const findTextRange = (searchText: string, containerNode: HTMLElement | null): Range | null => {
@@ -283,22 +312,33 @@ useEffect(() => {
           className="cursor-pointer nopan relative rounded-3xl border-2 bg-neutral-900/90 text-neutral-100 shadow-2xl overflow-hidden transition-all"
           style={{
             width: 400,
-            borderColor: data.color || 'rgba(255, 255, 255, 0.1)',
-            boxShadow: isSelected && isChatPanelOpen
+            // if data is root, bg transparent
+            backgroundColor: data.isRoot ? 'transparent' : 'rgba(255, 255, 255, 0.1)',
+            // if data is root, border transparent
+            borderColor: data.isRoot ? 'transparent' : 'rgba(255, 255, 255, 0.1)',
+            boxShadow: data.isRoot ? 'none' : isSelected && isChatPanelOpen
               ? `0 0 0 4px ${data.color || '#60A5FA'}40, 0 0 30px ${data.color || '#60A5FA'}80`
               : isInActivePath && isChatPanelOpen
               ? `0 0 0 3px ${data.color || '#60A5FA'}30, 0 0 20px ${data.color || '#60A5FA'}40`
-              : undefined,
+              : data.isRoot ? 'none' : undefined,
           }}
         >
         <div className="flex flex-col gap-2 min-h-full">
           {data.isRoot ? (
             <div className="p-8 flex flex-col gap-4 justify-center flex-1">
-              <h2 className="text-2xl font-semibold text-center">Start Your Journey</h2>
+              <h2 className="text-2xl font-semibold text-center font-fritzle"
+              style={{
+                fontSize: '2rem',
+                fontFamily: 'fritzle',
+                fontWeight: 'bold',
+                color: 'white',
+                textShadow: '0 0 10px rgba(0, 0, 0, 0.5)',
+              }}
+              >Start Your Journey</h2>
               <input
                 autoFocus
                 placeholder="Ask your first question..."
-                className="w-full rounded-lg bg-neutral-800 border border-white/10 px-4 py-3 text-base outline-none focus:border-white/30 transition-colors"
+                className="w-full rounded-full bg-neutral-800  border-white/10 px-4 py-3 text-base outline-none focus:border-white/30 transition-colors"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && e.currentTarget.value.trim()) {
                     onAddNote?.(id, e.currentTarget.value.trim());
@@ -308,10 +348,121 @@ useEffect(() => {
               />
             </div>
           ) : data.isLoading ? (
-            <div className="p-6 flex items-center justify-center flex-1">
-              <div className="flex flex-col items-center gap-4">
-                <div className="w-12 h-12 border-4 border-neutral-700 border-t-neutral-400 rounded-full animate-spin" />
-                <p className="text-sm text-neutral-400">Generating content...</p>
+            <div className="p-4 flex flex-col flex-1 overflow-hidden">
+              {/* Header with spinner */}
+              <div className="flex items-center gap-3 mb-3 pb-3 border-b border-neutral-700/50">
+                <div className="w-6 h-6 border-3 border-neutral-700 border-t-emerald-400 rounded-full animate-spin" />
+                <p className="text-sm font-medium text-emerald-400">Researching...</p>
+              </div>
+              
+              {/* Live logs */}
+              {liveLogs && liveLogs.length > 0 ? (
+                <div className="flex-1 overflow-y-auto space-y-2">
+                  {liveLogs.map((log, idx) => {
+                    const formatted = formatLogMessage(log);
+                    return (
+                      <div key={idx} className="text-xs">
+                        {formatted.type === 'tool' ? (
+                          <div className="flex items-start gap-2 p-2 bg-blue-500/10 rounded border-l-2 border-blue-500">
+                            <span className="text-blue-400 font-mono">▶</span>
+                            <div className="flex-1">
+                              <div className="font-medium text-blue-300">{formatted.content}</div>
+                              {formatted.details && <div className="text-neutral-400 mt-1 font-mono text-[10px]">{formatted.details}</div>}
+                            </div>
+                          </div>
+                        ) : formatted.type === 'thinking' ? (
+                          <div className="flex items-start gap-2 p-2 text-neutral-300">
+                            <span className="text-neutral-500">•</span>
+                            <div className="flex-1">{formatted.content}</div>
+                          </div>
+                        ) : formatted.type === 'error' ? (
+                          <div className="flex items-start gap-2 p-2 bg-red-500/10 rounded border-l-2 border-red-500">
+                            <span className="text-red-400">✕</span>
+                            <div className="flex-1 text-red-300">{formatted.content}</div>
+                          </div>
+                        ) : (
+                          <div className="text-neutral-400 px-2">{formatted.content}</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div ref={logsEndRef} />
+                </div>
+              ) : (
+                <div className="flex-1 flex items-center justify-center">
+                  <p className="text-sm text-neutral-500">Initializing research...</p>
+                </div>
+              )}
+            </div>
+          ) : liveLogs && liveLogs.length > 0 ? (
+            // Show logs + response when complete
+            <div className="flex flex-col flex-1">
+              {/* Response */}
+              <div className="p-6 border-b border-neutral-700/30" ref={contentRef} onMouseUp={handleTextSelection}>
+                <h2
+                  className="text-xl font-semibold mb-2 select-text cursor-pointer hover:opacity-80 transition-opacity"
+                  onClick={(e) => {
+                    const selection = window.getSelection();
+                    if (!selection || selection.toString().length === 0) {
+                      onNodeClick?.(id);
+                    }
+                  }}
+                  title="Click to open conversation path"
+                >
+                  {data.title}
+                </h2>
+                <div className="text-sm leading-relaxed text-neutral-300 select-text cursor-text prose prose-invert prose-sm max-w-none">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      a: ({ node, ...props }) => (
+                        <a {...props} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 inline-flex items-center gap-1">
+                          {props.children}
+                          <ExternalLink className="w-3 h-3 inline" />
+                        </a>
+                      ),
+                    }}
+                  >
+                    {data.body}
+                  </ReactMarkdown>
+                </div>
+              </div>
+              
+              {/* Research trace */}
+              <div className="flex-1 overflow-y-auto bg-neutral-900/50">
+                <div className="p-3 border-b border-neutral-700/30 bg-neutral-800/50">
+                  <p className="text-xs font-medium text-neutral-400">Research Trace</p>
+                </div>
+                <div className="p-3 space-y-2">
+                  {liveLogs.map((log, idx) => {
+                    const formatted = formatLogMessage(log);
+                    return (
+                      <div key={idx} className="text-xs">
+                        {formatted.type === 'tool' ? (
+                          <div className="flex items-start gap-2 p-2 bg-blue-500/10 rounded border-l-2 border-blue-500">
+                            <span className="text-blue-400 font-mono">▶</span>
+                            <div className="flex-1">
+                              <div className="font-medium text-blue-300">{formatted.content}</div>
+                              {formatted.details && <div className="text-neutral-400 mt-1 font-mono text-[10px]">{formatted.details}</div>}
+                            </div>
+                          </div>
+                        ) : formatted.type === 'thinking' ? (
+                          <div className="flex items-start gap-2 p-2 text-neutral-300">
+                            <span className="text-neutral-500">•</span>
+                            <div className="flex-1">{formatted.content}</div>
+                          </div>
+                        ) : formatted.type === 'error' ? (
+                          <div className="flex items-start gap-2 p-2 bg-red-500/10 rounded border-l-2 border-red-500">
+                            <span className="text-red-400">✕</span>
+                            <div className="flex-1 text-red-300">{formatted.content}</div>
+                          </div>
+                        ) : (
+                          <div className="text-neutral-400 px-2">{formatted.content}</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           ) : (

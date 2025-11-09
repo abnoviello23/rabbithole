@@ -22,7 +22,7 @@ import { SessionManager } from './SessionManager';
 import { ChatPanel, ChatMessage } from './ChatPanel';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
-import { generateContent, NodeContext } from '../utils/api';
+import { generateContent, NodeContext, startResearchStream, ResearchStreamHandle } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 
 const STORAGE_KEY = 'rabbithole-sessions';
@@ -44,6 +44,9 @@ export default function Canvas() {
   const saveTimeoutRef = useRef<NodeJS.Timeout>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [isChatPanelOpen, setIsChatPanelOpen] = useState(false);
+  const [liveLogsByNode, setLiveLogsByNode] = useState<Record<string, string[]>>({});
+  const [activeStreams, setActiveStreams] = useState<Record<string, ResearchStreamHandle>>({});
+  const [forceAgentMode, setForceAgentMode] = useState(false);
 
   // Helper function to build path from root to a given node
   const buildPath = useCallback((targetNodeId: string, currentEdges: Edge[]): string[] => {
@@ -156,40 +159,141 @@ export default function Canvas() {
       return currentEdges;
     });
 
-    // Generate content with full context
+    // Build path from root to source node
+    const pathIds = buildPath(sourceId, currentEdges);
+    const path = pathIds.join('/');
+    const context = buildContext(pathIds, currentNodes);
+
+    // Heuristic: Use agent streaming when:
+    // - Force agent mode is enabled (manual toggle)
+    // - selectedContext is provided
+    // - path depth >= 3
+    // - query length >= 90 chars
+    const useAgentMode = forceAgentMode || !!(selectedContext || pathIds.length >= 3 || userQuery.length >= 90);
+
+    // Debug logging
+    console.log('Mode selection:', {
+      forceAgentMode,
+      selectedContext: !!selectedContext,
+      pathDepth: pathIds.length,
+      queryLength: userQuery.length,
+      useAgentMode
+    });
+
     try {
-      // Build path from root to source node
-      const pathIds = buildPath(sourceId, currentEdges);
-      const path = pathIds.join('/');
+      if (useAgentMode) {
+        // Agent mode: Use WebSocket streaming
+        console.log('✅ Using agent mode for query:', userQuery);
+        
+        // Initialize logs for this node
+        setLiveLogsByNode(prev => ({ ...prev, [nodeId]: [] }));
+        
+        const stream = startResearchStream(
+          nodeId,
+          userQuery,
+          path,
+          context,
+          selectedContext,
+          {
+            onStatus: (text) => {
+              setLiveLogsByNode(prev => ({
+                ...prev,
+                [nodeId]: [...(prev[nodeId] || []), text]
+              }));
+            },
+            onTool: (name, details) => {
+              const toolLog = `🛠️ Using tool: ${name}`;
+              let detailsLog = '';
+              if (details.query) detailsLog += `\n   → Query: ${details.query}`;
+              if (details.file_path) detailsLog += `\n   → File: ${details.file_path}`;
+              if (details.command) detailsLog += `\n   → Command: ${details.command}`;
+              
+              setLiveLogsByNode(prev => ({
+                ...prev,
+                [nodeId]: [...(prev[nodeId] || []), toolLog + detailsLog]
+              }));
+            },
+            onFinal: (title, response, suggestedQuestions) => {
+              console.log('✅ onFinal callback triggered:', { nodeId, title, responseLength: response.length });
+              
+              // Update node with final content
+              setNodes((ns) => {
+                console.log('📝 Updating node:', nodeId, 'isLoading: false');
+                return ns.map((n) =>
+                  n.id === nodeId
+                    ? {
+                        ...n,
+                        data: {
+                          title,
+                          body: response,
+                          isLoading: false,
+                          color,
+                        },
+                      }
+                    : n
+                );
+              });
+              
+              // Clean up stream
+              setActiveStreams(prev => {
+                const newStreams = { ...prev };
+                delete newStreams[nodeId];
+                console.log('🧹 Cleaned up stream for node:', nodeId);
+                return newStreams;
+              });
+            },
+            onError: (message) => {
+              console.error('Stream error:', message);
+              setLiveLogsByNode(prev => ({
+                ...prev,
+                [nodeId]: [...(prev[nodeId] || []), `❌ Error: ${message}`]
+              }));
+              
+              // Remove loading node
+              setNodes((ns) => ns.filter((n) => n.id !== nodeId));
+              setEdges((es) => es.filter((e) => e.id !== edgeId));
+              
+              // Clean up stream
+              setActiveStreams(prev => {
+                const newStreams = { ...prev };
+                delete newStreams[nodeId];
+                return newStreams;
+              });
+            },
+          }
+        );
+        
+        // Store stream handle
+        setActiveStreams(prev => ({ ...prev, [nodeId]: stream }));
+        
+      } else {
+        // Quick mode: Use existing /generate endpoint
+        console.log('⚡ Using quick mode for query:', userQuery);
+        const content = await generateContent(userQuery, selectedContext, path, context);
 
-      // Build context from all nodes in path
-      const context = buildContext(pathIds, currentNodes);
-
-      // Generate content with context
-      const content = await generateContent(userQuery, selectedContext, path, context);
-
-      // Update node with generated content
-      setNodes((ns) =>
-        ns.map((n) =>
-          n.id === nodeId
-            ? {
-                ...n,
-                data: {
-                  ...content,
-                  isLoading: false,
-                  color, // Preserve the color
-                },
-              }
-            : n
-        )
-      );
+        // Update node with generated content
+        setNodes((ns) =>
+          ns.map((n) =>
+            n.id === nodeId
+              ? {
+                  ...n,
+                  data: {
+                    ...content,
+                    isLoading: false,
+                    color,
+                  },
+                }
+              : n
+          )
+        );
+      }
     } catch (error) {
       console.error('Failed to generate content:', error);
       // Remove loading node on error
       setNodes((ns) => ns.filter((n) => n.id !== nodeId));
       setEdges((es) => es.filter((e) => e.id !== edgeId));
     }
-  }, [setNodes, setEdges, buildPath, buildContext]);
+  }, [setNodes, setEdges, buildPath, buildContext, forceAgentMode]);
 
   // Calculate active path node IDs
   const activePathNodeIds = useMemo(() => {
@@ -215,10 +319,11 @@ export default function Canvas() {
           isSelected={props.id === selectedNodeId}
           isChatPanelOpen={isChatPanelOpen}
           edges={edges}
+          liveLogs={liveLogsByNode[props.id]}
         />
       ),
     }),
-    [handleAddNote, handleNodeClick, activePathNodeIds, selectedNodeId, isChatPanelOpen, edges]
+    [handleAddNote, handleNodeClick, activePathNodeIds, selectedNodeId, isChatPanelOpen, edges, liveLogsByNode]
   );
 
   const edgeTypes = useMemo(
@@ -393,6 +498,19 @@ export default function Canvas() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes.map(n => `${n.id}:${n.width}:${n.height}:${n.data?.isLoading}`).join(','), edges]);
 
+  // Cleanup: Close all active streams on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(activeStreams).forEach(stream => {
+        try {
+          stream.close();
+        } catch (e) {
+          console.error('Error closing stream:', e);
+        }
+      });
+    };
+  }, [activeStreams]);
+
   return (
     <div style={{ height: '100vh', width: '100vw', background: '#0a0a0a', display: 'flex' }}>
       {/* Canvas area */}
@@ -412,14 +530,34 @@ export default function Canvas() {
           onDeleteSession={deleteSession}
         />
 
-        {/* Chat panel toggle button */}
-        <button
-          onClick={() => setIsChatPanelOpen(!isChatPanelOpen)}
-          className="absolute top-4 right-4 z-50 flex items-center gap-2 px-4 py-2 bg-black/40 backdrop-blur-sm border border-white/20 rounded-lg text-white hover:bg-black/50 transition-colors"
-          title="View conversation path"
-        >
-          <FileText className="w-4 h-4" />
-        </button>
+        {/* Control buttons */}
+        <div className="absolute top-4 right-4 z-50 flex items-center gap-2">
+          {/* Agent mode toggle */}
+          <button
+            onClick={() => {
+              const newMode = !forceAgentMode;
+              setForceAgentMode(newMode);
+              console.log(`🎛️ Mode toggle: ${newMode ? 'AGENT MODE (forced)' : 'AUTO MODE (heuristic)'}`);
+            }}
+            className={`flex items-center gap-2 px-4 py-2 backdrop-blur-sm border rounded-lg transition-all ${
+              forceAgentMode
+                ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/30'
+                : 'bg-black/40 border-white/20 text-white hover:bg-black/50'
+            }`}
+            title={forceAgentMode ? 'Agent mode: Always use deep research' : 'Auto mode: Smart switching'}
+          >
+            <span className="text-sm font-medium">{forceAgentMode ? '🔴 Agent' : '⚡ Auto'}</span>
+          </button>
+
+          {/* Chat panel toggle button */}
+          <button
+            onClick={() => setIsChatPanelOpen(!isChatPanelOpen)}
+            className="flex items-center gap-2 px-4 py-2 bg-black/40 backdrop-blur-sm border border-white/20 rounded-lg text-white hover:bg-black/50 transition-colors"
+            title="View conversation path"
+          >
+            <FileText className="w-4 h-4" />
+          </button>
+        </div>
 
         <div style={{ width: '100%', height: '100%' }}>
           <ReactFlow
@@ -458,6 +596,8 @@ export default function Canvas() {
         isOpen={isChatPanelOpen}
         onClose={() => setIsChatPanelOpen(false)}
         lineage={buildLineage(selectedNodeId)}
+        activeNodeId={selectedNodeId}
+        liveLogsByNode={liveLogsByNode}
       />
     </div>
   );
