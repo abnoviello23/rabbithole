@@ -304,34 +304,29 @@ export default function Canvas() {
       data: { color, userQuery, selectedContext, sourceType },
     };
 
-    // Add edge and loading node immediately (no layout - will be handled by useEffect)
-    let currentEdges: Edge[] = [];
-    let currentNodes: Node<CardNodeData>[] = [];
+    // Pre-compute arrays for API call (before setState)
+    const currentEdges = [...edges, newEdge];
+    const currentNodes = [...nodes, loadingNode];
 
-    setEdges((edges) => {
-      currentEdges = [...edges, newEdge];
-      setNodes((ns) => {
-        currentNodes = [...ns, loadingNode];
-        return currentNodes; // No layout - instant rendering
-      });
-      return currentEdges;
-    });
+    // Add edge and loading node immediately
+    setEdges([...edges, newEdge]);
+    setNodes([...nodes, loadingNode]);
 
-    // Generate content with full context
-    try {
-      // Build path from root to source node
-      const pathIds = buildPath(sourceId, currentEdges);
-      const path = pathIds.join('/');
+    // Defer API call to let React render the loading node first
+    setTimeout(async () => {
+      try {
+        // Build path from root to source node
+        const pathIds = buildPath(sourceId, currentEdges);
+        const path = pathIds.join('/');
 
-      // Build context from all nodes in path
-      const context = buildContext(pathIds, currentNodes, currentEdges);
+        // Build context from all nodes in path
+        const context = buildContext(pathIds, currentNodes, currentEdges);
 
-      // Build graph state to send with request
-      const graphState = buildGraphState(currentSessionId, currentNodes, currentEdges);
+        // Build graph state to send with request
+        const graphState = buildGraphState(currentSessionId, currentNodes, currentEdges);
 
-      // Generate content with context and graph state (sourceType already determined above)
-      const content = await generateContent(userQuery, selectedContext, path, context, currentSessionId, graphState, sourceType, session?.idToken);
-
+        // Generate content with context and graph state (sourceType already determined above)
+        const content = await generateContent(userQuery, selectedContext, path, context, currentSessionId, graphState, sourceType, session?.idToken);
       // Update cost info if available
       if (content.costInfo) {
         setCostInfo(content.costInfo);
@@ -357,7 +352,6 @@ export default function Canvas() {
               }
             : n
         );
-        
         // Run clustering on all nodes (including the newly updated one)
         const allNodesContext: Record<string, NodeContext> = {};
         updatedNodes.forEach((node) => {
@@ -370,21 +364,21 @@ export default function Canvas() {
           }
         });
         
-        // Call clustering asynchronously (don't block the UI)
-        if (Object.keys(allNodesContext).length > 1) {
-          // Build graph state for clustering
-          const clusterGraphState = buildGraphState(currentSessionId, updatedNodes, currentEdges);
-          clusterNodes(allNodesContext, currentSessionId, clusterGraphState, session?.idToken)
-            .then((result) => {
-              setClusterData(result.clusters);
-              if (result.costInfo) {
-                setCostInfo(result.costInfo);
-              }
-            })
-            .catch((error) => {
-              console.error('Clustering failed:', error);
-            });
-        }
+        // // Call clustering asynchronously (don't block the UI)
+        // if (Object.keys(allNodesContext).length > 1) {
+        //   // Build graph state for clustering
+        //   const clusterGraphState = buildGraphState(currentSessionId, updatedNodes, currentEdges);
+        //   clusterNodes(allNodesContext, currentSessionId, clusterGraphState, session?.idToken)
+        //     .then((result) => {
+        //       setClusterData(result.clusters);
+        //       if (result.costInfo) {
+        //         setCostInfo(result.costInfo);
+        //       }
+        //     })
+        //     .catch((error) => {
+        //       console.error('Clustering failed:', error);
+        //     });
+        // }
 
         return updatedNodes;
       });
@@ -396,6 +390,7 @@ export default function Canvas() {
       setNodes((ns) => ns.filter((n) => n.id !== nodeId));
       setEdges((es) => es.filter((e) => e.id !== edgeId));
     }
+    }, 0);
   }, [setNodes, setEdges, buildPath, buildContext, nodes, edges, currentSessionId, session]);
 
   const handleAgentRequest = useCallback(async (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => {
@@ -434,18 +429,13 @@ export default function Canvas() {
       data: { color: color || '#8B5CF6', userQuery, selectedContext },
     };
 
-    // Add edge and loading node immediately (no layout - will be handled by useEffect)
-    let currentEdges: Edge[] = [];
-    let currentNodes: Node<CardNodeData>[] = [];
+    // Pre-compute arrays for API call (before setState)
+    const currentEdges = [...edges, newEdge];
+    const currentNodes = [...nodes, loadingNode];
 
-    setEdges((edges) => {
-      currentEdges = [...edges, newEdge];
-      setNodes((ns) => {
-        currentNodes = [...ns, loadingNode];
-        return currentNodes; // No layout - instant rendering
-      });
-      return currentEdges;
-    });
+    // Add edge and loading node immediately
+    setEdges([...edges, newEdge]);
+    setNodes([...nodes, loadingNode]);
 
     // Track status messages and sources count
     const statusMessages: string[] = ['Initializing Claude AI agent with web search capabilities...'];
@@ -453,6 +443,8 @@ export default function Canvas() {
     const sources: Source[] = [];
     const createdNodeIds = new Set<string>(); // Track nodes created by agent to prevent duplicates
 
+    // Defer API call to let React render the loading node first
+    setTimeout(async () => {
     try {
       // Build path from root to source node
       const pathIds = buildPath(sourceId, currentEdges);
@@ -667,6 +659,7 @@ export default function Canvas() {
         )
       );
     }
+    }, 0);
   }, [setNodes, setEdges, buildPath, buildContext, nodes, edges, currentSessionId, session]);
 
   // Calculate active path node IDs
