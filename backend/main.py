@@ -202,8 +202,7 @@ async def research_websocket(websocket: WebSocket):
             query=user_query,
             path=path,
             context=context,
-            on_event=send_event,
-            source_node_id=node_id
+            on_event=send_event
         )
 
         logger.info("="*80)
@@ -329,9 +328,11 @@ async def cluster_endpoint(request: ClusterRequest):
             # Increase max_k to allow more clusters - use a more generous formula
             # For small datasets, allow more clusters; cap at reasonable max
             if n_nodes <= 10:
-                max_k = 3  # Allow up to 8 clusters for small datasets
+                max_k = min(n_nodes - 1, 8)  # Allow up to 8 clusters for small datasets
+            elif n_nodes <= 20:
+                max_k = min(int(n_nodes * 0.6), 10)  # 60% of nodes, max 10
             else:
-                max_k = min(int(n_nodes * 0.5), 6)  # 50% of nodes, max 15
+                max_k = min(int(n_nodes * 0.5), 15)  # 50% of nodes, max 15
             
             k_range = range(2, max_k + 1)  # Start from k=2 (minimum meaningful clusters)
             inertias = []
@@ -388,7 +389,7 @@ async def cluster_endpoint(request: ClusterRequest):
                 
                 # Find the last k where decrease is still significant
                 n_clusters_pct = k_range[0]  # Default to minimum
-                for k, decrease in decreases[:len(decreases)//2+1]:
+                for k, decrease in decreases:
                     if decrease > threshold:
                         n_clusters_pct = k  # Update to this k since it still has good decrease
                     # Continue to find the last good one (allows more clusters)

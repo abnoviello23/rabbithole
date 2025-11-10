@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -27,20 +28,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <head>
-        <style dangerouslySetInnerHTML={{
-          __html: `
-            ::highlight(temp-highlight) {
-              background-color: rgba(96, 165, 250, 0.4);
-              color: inherit;
-            }
-          `
-        }} />
-      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         {children}
+        <Analytics />
       </body>
     </html>
   );
