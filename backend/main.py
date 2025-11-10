@@ -40,11 +40,7 @@ async def lifespan(app: FastAPI):
     # Startup
     global supabase
     supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")  # Use service key for server-side
-
-    if not supabase_key:
-        # Fallback to anon key (less privileged)
-        supabase_key = os.getenv("SUPABASE_ANON_KEY")
+    supabase_key = os.getenv("SUPABASE_ANON_KEY")
 
     if supabase_url and supabase_key:
         try:
@@ -53,7 +49,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to connect to Supabase: {e}")
     else:
-        logger.warning("SUPABASE_URL or SUPABASE_SERVICE_KEY not set - database features disabled")
+        logger.warning("SUPABASE_URL or SUPABASE_ANON_KEY not set - database features disabled")
 
     yield
 
