@@ -160,7 +160,7 @@ export interface CardNodeData {
 
 interface CardNodeComponentProps extends NodeProps<CardNodeData> {
   onAddNote?: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
-  onAgentRequest?: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
+  // DEPRECATED: onAgentRequest?: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
   onNodeClick?: (nodeId: string) => void;
   isInActivePath?: boolean;
   isSelected?: boolean;
@@ -174,7 +174,7 @@ interface PersistentHighlight {
   nodeId: string;
 }
 
-export function CardNode({ data, id, onAddNote, onAgentRequest, onNodeClick, isInActivePath, isSelected, isChatPanelOpen, edges }: CardNodeComponentProps) {
+export function CardNode({ data, id, onAddNote, onNodeClick, isInActivePath, isSelected, isChatPanelOpen, edges }: CardNodeComponentProps) {
   const [show, setShow] = useState(false);
   const [showAgent, setShowAgent] = useState(false);
   const [showSources, setShowSources] = useState(false);
@@ -406,7 +406,8 @@ useEffect(() => {
         </div>
       </NodeToolbar>
 
-      <NodeToolbar isVisible={showAgent} position={Position.Bottom}>
+      {/* DEPRECATED: Agent research toolbar */}
+      {/* <NodeToolbar isVisible={showAgent} position={Position.Bottom}>
         <div
           ref={agentToolbarRef}
           className="rounded-xl border border-purple-500/30 bg-gradient-to-br from-purple-900/90 to-blue-900/90 backdrop-blur-sm text-neutral-100 shadow-xl p-2 w-64"
@@ -428,7 +429,7 @@ useEffect(() => {
             }}
           />
         </div>
-      </NodeToolbar>
+      </NodeToolbar> */}
 
       {/* Wrapper for node and external button */}
       <div className="relative">
@@ -751,8 +752,8 @@ useEffect(() => {
               <MessageSquarePlus className="w-6 h-6" />
             </div>
 
-            {/* AI Agent research button */}
-            <div
+            {/* DEPRECATED: AI Agent research button */}
+            {/* <div
               onClick={() => {
                 setShowAgent(!showAgent);
                 setShow(false);
@@ -761,7 +762,7 @@ useEffect(() => {
               title="Research with AI Agent"
             >
               <Sparkles className="w-6 h-6 text-purple-400" />
-            </div>
+            </div> */}
           </div>
         )}
       </div>
