@@ -25,8 +25,9 @@ import { ClusterLegend } from './ClusterLegend';
 import SignIn from './SignIn';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
-import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo } from '../utils/api';
+import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo, GraphState, MinimalNode, MinimalEdge } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
+import { useSession } from 'next-auth/react';
 
 const STORAGE_KEY = 'rabbithole-sessions';
 
@@ -35,9 +36,65 @@ function stripEmojis(text: string): string {
   return text.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
 }
 
+// Helper functions to convert React Flow nodes/edges to minimal format (excludes layout data)
+function nodesToMinimal(nodes: Node<CardNodeData>[]): MinimalNode[] {
+  return nodes
+    .filter(n => !n.data?.isSubtopic) // Exclude subtopic nodes
+    .map(node => ({
+      id: node.id,
+      data: {
+        title: node.data.title,
+        body: node.data.body,
+        image: node.data.image,
+        isRoot: node.data.isRoot,
+        color: node.data.color,
+        suggestedQuestions: node.data.suggestedQuestions,
+        subtopics: node.data.subtopics,
+        sourcesCount: node.data.sourcesCount,
+        sources: node.data.sources,
+      },
+    }));
+}
+
+function edgesToMinimal(edges: Edge[], nodes: Node<CardNodeData>[]): MinimalEdge[] {
+  // Get IDs of subtopic nodes to filter out their edges
+  const subtopicNodeIds = new Set(
+    nodes.filter(n => n.data?.isSubtopic).map(n => n.id)
+  );
+
+  return edges
+    .filter(e => !subtopicNodeIds.has(e.source) && !subtopicNodeIds.has(e.target))
+    .map(edge => {
+      const edgeData = edge.data as any;
+      return {
+        source: edge.source,
+        target: edge.target,
+        label: typeof edge.label === 'string' ? edge.label : undefined,
+        data: edgeData ? {
+          color: edgeData.color,
+          userQuery: edgeData.userQuery,
+          selectedContext: edgeData.selectedContext,
+          sourceType: edgeData.sourceType,
+        } : undefined,
+      };
+    });
+}
+
+function buildGraphState(
+  sessionId: string,
+  nodes: Node<CardNodeData>[],
+  edges: Edge[]
+): GraphState {
+  return {
+    sessionId,
+    nodes: nodesToMinimal(nodes),
+    edges: edgesToMinimal(edges, nodes),
+  };
+}
+
 // Create context for dynamic props
 interface CanvasContextType {
-  onAddNote: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
+  onAddNote: (sourceId: string, userQuery: string, selectedContext?: string, color?: string, sourceType?: string) => void;
   onAgentRequest: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
   onNodeClick: (nodeId: string) => void;
   activePathNodeIds: Set<string>;
@@ -93,6 +150,7 @@ const edgeTypes = {
 interface SessionData {
   nodes: Node<CardNodeData>[];
   edges: Edge[];
+  sessionId: string;
 }
 
 interface Sessions {
@@ -100,9 +158,11 @@ interface Sessions {
 }
 
 export default function Canvas() {
+  const { data: session } = useSession();
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState(INITIAL_EDGES);
   const [currentSessionName, setCurrentSessionName] = useState<string>('New Session');
+  const [currentSessionId, setCurrentSessionId] = useState<string>(crypto.randomUUID());
   const [sessions, setSessions] = useState<string[]>([]);
   const saveTimeoutRef = useRef<NodeJS.Timeout>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -111,6 +171,9 @@ export default function Canvas() {
   const [isLegendVisible, setIsLegendVisible] = useState(true);
   const hasShownLegendRef = useRef(false);
   const [costInfo, setCostInfo] = useState<CostInfo>({ used: 0, max_total: 10.0 });
+
+  // Get user ID from session
+  const userId = session?.user?.email || 'anonymous';
 
   // Helper function to build path from root to a given node
   const buildPath = useCallback((targetNodeId: string, currentEdges: Edge[]): string[] => {
@@ -195,11 +258,18 @@ export default function Canvas() {
     return lineage;
   }, [nodes, edges, buildPath]);
 
-  const handleAddNote = useCallback(async (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => {
+  const handleAddNote = useCallback(async (sourceId: string, userQuery: string, selectedContext?: string, color?: string, explicitSourceType?: string) => {
     const nodeId = `node-${Date.now()}`;
     const edgeId = `edge-${Date.now()}`;
 
-    // Create loading node
+    // Find parent node to calculate optimistic position
+    const parentNode = nodes.find(n => n.id === sourceId);
+    const optimisticPosition = parentNode ? {
+      x: parentNode.position.x,
+      y: parentNode.position.y + (parentNode.height || 340) + 240 // parent height + VERTICAL_GAP
+    } : { x: 0, y: 0 };
+
+    // Create loading node with optimistic position
     const loadingNode: Node<CardNodeData> = {
       id: nodeId,
       type: 'card',
@@ -210,8 +280,18 @@ export default function Canvas() {
         isLoading: true,
         color,
       },
-      position: { x: 0, y: 0 },
+      position: optimisticPosition,
     };
+
+    // Determine source type (priority: explicit > text selection > default)
+    let sourceType: string;
+    if (explicitSourceType) {
+      sourceType = explicitSourceType;
+    } else if (selectedContext) {
+      sourceType = 'text_selection_follow_up';
+    } else {
+      sourceType = 'button_follow_up';
+    }
 
     const newEdge: Edge = {
       id: edgeId,
@@ -221,10 +301,10 @@ export default function Canvas() {
       label: userQuery,
       style: color ? { stroke: color, strokeWidth: 2 } : undefined,
       markerEnd: color ? { type: MarkerType.ArrowClosed, color } : undefined,
-      data: { color, userQuery, selectedContext },
+      data: { color, userQuery, selectedContext, sourceType },
     };
 
-    // Add edge and loading node with immediate layout
+    // Add edge and loading node immediately (no layout - will be handled by useEffect)
     let currentEdges: Edge[] = [];
     let currentNodes: Node<CardNodeData>[] = [];
 
@@ -232,7 +312,7 @@ export default function Canvas() {
       currentEdges = [...edges, newEdge];
       setNodes((ns) => {
         currentNodes = [...ns, loadingNode];
-        return layoutNodes(currentNodes, currentEdges);
+        return currentNodes; // No layout - instant rendering
       });
       return currentEdges;
     });
@@ -246,8 +326,11 @@ export default function Canvas() {
       // Build context from all nodes in path
       const context = buildContext(pathIds, currentNodes, currentEdges);
 
-      // Generate content with context
-      const content = await generateContent(userQuery, selectedContext, path, context);
+      // Build graph state to send with request
+      const graphState = buildGraphState(currentSessionId, currentNodes, currentEdges);
+
+      // Generate content with context and graph state (sourceType already determined above)
+      const content = await generateContent(userQuery, selectedContext, path, context, currentSessionId, graphState, sourceType, session?.idToken);
 
       // Update cost info if available
       if (content.costInfo) {
@@ -289,7 +372,9 @@ export default function Canvas() {
         
         // Call clustering asynchronously (don't block the UI)
         if (Object.keys(allNodesContext).length > 1) {
-          clusterNodes(allNodesContext)
+          // Build graph state for clustering
+          const clusterGraphState = buildGraphState(currentSessionId, updatedNodes, currentEdges);
+          clusterNodes(allNodesContext, currentSessionId, clusterGraphState, session?.idToken)
             .then((result) => {
               setClusterData(result.clusters);
               if (result.costInfo) {
@@ -300,7 +385,7 @@ export default function Canvas() {
               console.error('Clustering failed:', error);
             });
         }
-        
+
         return updatedNodes;
       });
 
@@ -311,11 +396,18 @@ export default function Canvas() {
       setNodes((ns) => ns.filter((n) => n.id !== nodeId));
       setEdges((es) => es.filter((e) => e.id !== edgeId));
     }
-  }, [setNodes, setEdges, buildPath, buildContext, nodes, edges]);
+  }, [setNodes, setEdges, buildPath, buildContext, nodes, edges, currentSessionId, session]);
 
   const handleAgentRequest = useCallback(async (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => {
     const nodeId = `node-${Date.now()}`;
     const edgeId = `edge-${Date.now()}`;
+
+    // Find parent node to calculate optimistic position
+    const parentNode = nodes.find(n => n.id === sourceId);
+    const optimisticPosition = parentNode ? {
+      x: parentNode.position.x,
+      y: parentNode.position.y + (parentNode.height || 340) + 240 // parent height + VERTICAL_GAP
+    } : { x: 0, y: 0 };
 
     // Create loading node with agent-specific message
     const loadingNode: Node<CardNodeData> = {
@@ -328,7 +420,7 @@ export default function Canvas() {
         isLoading: true,
         color,
       },
-      position: { x: 0, y: 0 },
+      position: optimisticPosition,
     };
 
     const newEdge: Edge = {
@@ -342,7 +434,7 @@ export default function Canvas() {
       data: { color: color || '#8B5CF6', userQuery, selectedContext },
     };
 
-    // Add edge and loading node with immediate layout
+    // Add edge and loading node immediately (no layout - will be handled by useEffect)
     let currentEdges: Edge[] = [];
     let currentNodes: Node<CardNodeData>[] = [];
 
@@ -350,7 +442,7 @@ export default function Canvas() {
       currentEdges = [...edges, newEdge];
       setNodes((ns) => {
         currentNodes = [...ns, loadingNode];
-        return layoutNodes(currentNodes, currentEdges);
+        return currentNodes; // No layout - instant rendering
       });
       return currentEdges;
     });
@@ -391,6 +483,13 @@ export default function Canvas() {
 
             console.log(`🎨 Agent creating node: ${event.title} (${agentNodeId})`);
 
+            // Find source node to calculate optimistic position
+            const sourceNode = nodes.find(n => n.id === event.source_id);
+            const agentOptimisticPosition = sourceNode ? {
+              x: sourceNode.position.x,
+              y: sourceNode.position.y + (sourceNode.height || 340) + 240
+            } : { x: 0, y: 0 };
+
             // Create the new node
             const newNode: Node<CardNodeData> = {
               id: agentNodeId,
@@ -401,7 +500,7 @@ export default function Canvas() {
                 isLoading: false,
                 color: color || '#8B5CF6', // Agent nodes get purple color by default
               },
-              position: { x: 0, y: 0 },
+              position: agentOptimisticPosition,
             };
 
             // Create edge from source to new node
@@ -416,12 +515,12 @@ export default function Canvas() {
               data: { color: color || '#8B5CF6', userQuery: event.user_query || event.title },
             };
 
-            // Add node and edge to canvas
+            // Add node and edge to canvas immediately (no layout)
             setEdges((edges) => {
               const updatedEdges = [...edges, newEdge];
               setNodes((ns) => {
                 const updatedNodes = [...ns, newNode];
-                return layoutNodes(updatedNodes, updatedEdges);
+                return updatedNodes; // No layout - instant rendering
               });
               return updatedEdges;
             });
@@ -532,7 +631,9 @@ export default function Canvas() {
 
         // Call clustering asynchronously
         if (Object.keys(allNodesContext).length > 1) {
-          clusterNodes(allNodesContext)
+          // Build graph state for clustering
+          const clusterGraphState = buildGraphState(currentSessionId, updatedNodes, currentEdges);
+          clusterNodes(allNodesContext, currentSessionId, clusterGraphState, session?.idToken)
             .then((result) => {
               setClusterData(result.clusters);
               if (result.costInfo) {
@@ -566,7 +667,7 @@ export default function Canvas() {
         )
       );
     }
-  }, [setNodes, setEdges, buildPath, buildContext, nodes, edges]);
+  }, [setNodes, setEdges, buildPath, buildContext, nodes, edges, currentSessionId, session]);
 
   // Calculate active path node IDs
   const activePathNodeIds = useMemo(() => {
@@ -605,10 +706,13 @@ export default function Canvas() {
         }
       }
 
-      // Run both semantic search and clustering in parallel
+      // Build graph state for API calls
+      const graphState = buildGraphState(currentSessionId, nodes, edges);
+
+      // Run both semantic search and clustering in parallel (floatingChat source)
       const [autoModeResult, clusterResult] = await Promise.all([
-        autoMode(query, context),
-        clusterNodes(context)
+        autoMode(query, context, currentSessionId, graphState, 'floating_chat', session?.idToken),
+        clusterNodes(context, currentSessionId, graphState, session?.idToken)
       ]);
 
       // Update cost info from both results
@@ -633,7 +737,7 @@ export default function Canvas() {
       console.error('Failed to process floating chat query:', error);
       throw error;
     }
-  }, [nodes, handleAddNote]);
+  }, [nodes, handleAddNote, edges, currentSessionId, session]);
 
   // Create context value with all dynamic props
   const contextValue = useMemo(
@@ -678,7 +782,7 @@ export default function Canvas() {
     }
   }, []);
 
-  // Save current session to localStorage (debounced)
+  // Save current session to localStorage and backend (debounced)
   const saveSession = useCallback((name: string, currentNodes: Node<CardNodeData>[], currentEdges: Edge[]) => {
     if (typeof window === 'undefined') return;
 
@@ -688,7 +792,7 @@ export default function Canvas() {
     }
 
     // Debounce save by 500ms
-    saveTimeoutRef.current = setTimeout(() => {
+    saveTimeoutRef.current = setTimeout(async () => {
       try {
         const stored = localStorage.getItem(STORAGE_KEY);
         const allSessions: Sessions = stored ? JSON.parse(stored) : {};
@@ -709,15 +813,19 @@ export default function Canvas() {
         allSessions[name] = {
           nodes: filteredNodes,
           edges: filteredEdges,
+          sessionId: currentSessionId,
         };
 
         localStorage.setItem(STORAGE_KEY, JSON.stringify(allSessions));
         loadSessionsList();
+
+        // Note: Backend snapshots are now saved automatically with each API call
+        // No need to explicitly save here since localStorage is source of truth
       } catch (error) {
         console.error('Failed to save session:', error);
       }
     }, 500);
-  }, [loadSessionsList]);
+  }, [loadSessionsList, currentSessionId]);
 
   // Load a specific session
   const loadSession = useCallback((name: string) => {
@@ -745,7 +853,11 @@ export default function Canvas() {
           setNodes(filteredNodes);
           setEdges(filteredEdges);
           setCurrentSessionName(name);
-          
+
+          // Load or generate sessionId
+          const loadedSessionId = sessionData.sessionId || crypto.randomUUID();
+          setCurrentSessionId(loadedSessionId);
+
           // Run clustering on loaded nodes to get cluster colors
           const loadedNodes = sessionData.nodes || INITIAL_NODES;
           const allNodesContext: Record<string, NodeContext> = {};
@@ -762,7 +874,9 @@ export default function Canvas() {
           // Cluster the loaded nodes if there are enough nodes
           if (Object.keys(allNodesContext).length > 1) {
             hasShownLegendRef.current = false; // Reset so legend shows for loaded session
-            clusterNodes(allNodesContext)
+            // Build graph state for clustering
+            const clusterGraphState = buildGraphState(loadedSessionId, filteredNodes, filteredEdges);
+            clusterNodes(allNodesContext, loadedSessionId, clusterGraphState, session?.idToken)
               .then((result) => {
                 setClusterData(result.clusters);
                 if (result.costInfo) {
@@ -782,13 +896,14 @@ export default function Canvas() {
     } catch (error) {
       console.error('Failed to load session:', error);
     }
-  }, [setNodes, setEdges]);
+  }, [setNodes, setEdges, session]);
 
   // Create new session
   const createNewSession = useCallback(() => {
     setNodes(INITIAL_NODES);
     setEdges(INITIAL_EDGES);
     setCurrentSessionName('New Session');
+    setCurrentSessionId(crypto.randomUUID()); // Generate new session ID
     setClusterData(null); // Clear cluster data for new session
     hasShownLegendRef.current = false; // Reset legend visibility state
   }, [setNodes, setEdges]);
@@ -840,7 +955,7 @@ export default function Canvas() {
     const fetchCostInfo = async () => {
       console.log('Fetching cost info...');
       try {
-        const costData = await getCostInfo();
+        const costData = await getCostInfo(session?.idToken);
         setCostInfo(costData);
       } catch (error) {
         console.error('Failed to fetch cost info on mount:', error);
@@ -848,7 +963,7 @@ export default function Canvas() {
     };
 
     fetchCostInfo();
-  }, []);
+  }, [session]);
 
 
   // Apply cluster colors to nodes when clusterData changes

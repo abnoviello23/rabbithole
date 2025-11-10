@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,9 +12,6 @@ import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from auth import get_current_user
-import time
-import uuid
-from threading import Lock
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -22,7 +21,46 @@ logger = logging.getLogger(__name__)
 env_path = Path(__file__).parent / '.env'
 load_dotenv(env_path)
 
-app = FastAPI(title="RabbitHole Backend API", version="1.0.0")
+# ============================================================================
+# SUPABASE CONNECTION SETUP
+# ============================================================================
+from supabase import create_client, Client
+from contextlib import asynccontextmanager
+
+# Supabase client (initialized on startup)
+supabase: Client = None
+
+def get_supabase() -> Client | None:
+    """Get Supabase client"""
+    return supabase
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan event handler for startup and shutdown"""
+    # Startup
+    global supabase
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY")  # Use service key for server-side
+
+    if not supabase_key:
+        # Fallback to anon key (less privileged)
+        supabase_key = os.getenv("SUPABASE_ANON_KEY")
+
+    if supabase_url and supabase_key:
+        try:
+            supabase = create_client(supabase_url, supabase_key)
+            logger.info("✅ Connected to Supabase")
+        except Exception as e:
+            logger.error(f"Failed to connect to Supabase: {e}")
+    else:
+        logger.warning("SUPABASE_URL or SUPABASE_SERVICE_KEY not set - database features disabled")
+
+    yield
+
+    # Shutdown (Supabase client doesn't need explicit cleanup)
+    logger.info("Shutdown complete")
+
+app = FastAPI(title="RabbitHole Backend API", version="1.0.0", lifespan=lifespan)
 
 # Configure CORS for authentication
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
@@ -44,7 +82,7 @@ app.add_middleware(
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ============================================================================
-# COST TRACKING - Temporary in-memory storage (will be replaced with SQL DB)
+# COST TRACKING
 # ============================================================================
 
 # Pricing table for OpenAI models (per 1M tokens)
@@ -57,13 +95,8 @@ PRICING = {
     "text-embedding-3-small": {"input": 0.02},
 }
 
-# Temporary storage (will be replaced with SQL database)
-cost_logs = []  # List of cost records: {user_id, session_id, timestamp, model, input_tokens, output_tokens, cost}
-user_costs = {}  # {user_id: {"current_cost": float, "max_cost": float}}
-user_costs_lock = Lock()  # Thread-safe access to user_costs
-
 # Default maximum cost per user (in dollars)
-DEFAULT_MAX_COST = 10.0
+DEFAULT_MAX_COST = 5.0
 
 
 class Node(BaseModel):
@@ -78,15 +111,23 @@ class GenerateRequest(BaseModel):
     selected_context: str | None = None
     path: str
     context: dict[str, Node]
+    session_id: str
+    graph_state: GraphState | None = None  # Graph snapshot for DB
+    source_type: str | None = None  # 'button_follow_up', 'text_selection_follow_up', 'suggested_follow_up'
 
 
 class AutoModeRequest(BaseModel):
     query: str
     nodes: dict[str, Node]
+    session_id: str
+    graph_state: GraphState | None = None  # Graph snapshot for DB
+    source_type: str | None = None
 
 
 class ClusterRequest(BaseModel):
     context: dict[str, Node]
+    session_id: str
+    graph_state: GraphState | None = None  # Graph snapshot for DB
 
 
 class Subtopic(BaseModel):
@@ -105,6 +146,56 @@ class GenerateResponse(BaseModel):
     suggested_questions: list[str]  # List of 2 suggested follow-up questions
     subtopics: list[Subtopic]  # List of 2-3 subtopics with categories
     cost_info: CostInfo
+
+
+# ============================================================================
+# MINIMAL SESSION STORAGE MODELS (excludes computed layout data)
+# ============================================================================
+
+class MinimalEdgeData(BaseModel):
+    """Edge metadata - only essential data, not computed styles"""
+    color: str | None = None
+    userQuery: str | None = None
+    selectedContext: str | None = None
+    sourceType: str | None = None  # 'button_follow_up', 'text_selection_follow_up', 'suggested_follow_up'
+
+
+class MinimalEdge(BaseModel):
+    """Minimal edge representation - excludes computed styles and markerEnd"""
+    source: str
+    target: str
+    label: str | None = None
+    data: MinimalEdgeData | None = None
+
+
+class CardNodeData(BaseModel):
+    """Complete node data - excludes position and dimensions"""
+    title: str
+    body: str
+    image: str | None = None
+    isLoading: bool | None = None
+    isRoot: bool | None = None
+    isSubtopic: bool | None = None
+    category: str | None = None
+    color: str | None = None
+    suggestedQuestions: list[str] | None = None
+    subtopics: list[Subtopic] | None = None
+    statusUpdates: list[str] | None = None
+    sourcesCount: int | None = None
+    sources: list[dict[str, str]] | None = None  # {url, title?}
+
+
+class MinimalNode(BaseModel):
+    """Minimal node representation - excludes position, width, height"""
+    id: str
+    data: CardNodeData
+
+
+class GraphState(BaseModel):
+    """Complete graph state for snapshot (minimal format)"""
+    sessionId: str
+    nodes: list[MinimalNode]
+    edges: list[MinimalEdge]
 
 
 # ============================================================================
@@ -140,36 +231,67 @@ def calculate_cost(model: str, input_tokens: int, output_tokens: int = 0) -> flo
 
 def get_or_create_user_cost(user_id: str) -> dict:
     """
-    Get user cost info, creating if it doesn't exist.
-    Thread-safe with lock.
+    Get user cost info from database, creating if it doesn't exist.
 
     Returns:
         {"current_cost": float, "max_cost": float}
     """
-    with user_costs_lock:
-        if user_id not in user_costs:
-            user_costs[user_id] = {
+    sb = get_supabase()
+    if not sb:
+        logger.warning("Supabase not available, returning default cost info")
+        return {
+            "current_cost": 0.0,
+            "max_cost": DEFAULT_MAX_COST
+        }
+
+    try:
+        # Try to get existing user cost
+        response = sb.table('user_costs').select('current_cost', 'max_cost').eq('user_id', user_id).execute()
+
+        if response.data and len(response.data) > 0:
+            row = response.data[0]
+            return {
+                "current_cost": float(row["current_cost"]),
+                "max_cost": float(row["max_cost"])
+            }
+        else:
+            # Create new user cost record
+            sb.table('user_costs').insert({
+                "user_id": user_id,
+                "current_cost": 0.0,
+                "max_cost": DEFAULT_MAX_COST
+            }).execute()
+
+            return {
                 "current_cost": 0.0,
                 "max_cost": DEFAULT_MAX_COST
             }
-        return user_costs[user_id].copy()
+
+    except Exception as e:
+        logger.error(f"Failed to get user cost from DB: {e}")
+        return {
+            "current_cost": 0.0,
+            "max_cost": DEFAULT_MAX_COST
+        }
 
 
 def track_cost(
     user_id: str,
     session_id: str,
     model: str,
+    operation: str,
     input_tokens: int,
     output_tokens: int,
     cost: float
 ) -> dict:
     """
-    Log cost record and update user's total cost atomically.
+    Log cost record to database and update user's total cost.
 
     Args:
         user_id: The user's unique ID
         session_id: The session ID
         model: Model name
+        operation: API operation (generate, automode, cluster)
         input_tokens: Input tokens used
         output_tokens: Output tokens used
         cost: Cost in dollars
@@ -177,29 +299,107 @@ def track_cost(
     Returns:
         Updated user cost info: {"current_cost": float, "max_cost": float}
     """
-    # Log the cost record
-    cost_log = {
-        "user_id": user_id,
-        "session_id": session_id,
-        "timestamp": time.time(),
-        "model": model,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "cost": cost
-    }
-    cost_logs.append(cost_log)
+    sb = get_supabase()
+    if not sb:
+        logger.warning("Supabase not available, cost not tracked")
+        return {
+            "current_cost": 0.0,
+            "max_cost": DEFAULT_MAX_COST
+        }
 
-    # Atomically update user's total cost
-    with user_costs_lock:
-        if user_id not in user_costs:
-            user_costs[user_id] = {
-                "current_cost": 0.0,
+    try:
+        # Insert cost log
+        sb.table('cost_logs').insert({
+            "user_id": user_id,
+            "session_id": session_id,
+            "model": model,
+            "operation": operation,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost": cost
+        }).execute()
+
+        # Get current user cost
+        user_cost_response = sb.table('user_costs').select('current_cost', 'max_cost').eq('user_id', user_id).execute()
+
+        if user_cost_response.data and len(user_cost_response.data) > 0:
+            current_data = user_cost_response.data[0]
+            new_cost = float(current_data["current_cost"]) + cost
+
+            # Update user cost
+            sb.table('user_costs').update({
+                "current_cost": new_cost,
+                "updated_at": "now()"
+            }).eq('user_id', user_id).execute()
+
+            return {
+                "current_cost": new_cost,
+                "max_cost": float(current_data["max_cost"])
+            }
+        else:
+            # Create new user cost record
+            sb.table('user_costs').insert({
+                "user_id": user_id,
+                "current_cost": cost,
+                "max_cost": DEFAULT_MAX_COST
+            }).execute()
+
+            return {
+                "current_cost": cost,
                 "max_cost": DEFAULT_MAX_COST
             }
 
-        user_costs[user_id]["current_cost"] += cost
+    except Exception as e:
+        logger.error(f"Failed to track cost in DB: {e}")
+        return {
+            "current_cost": 0.0,
+            "max_cost": DEFAULT_MAX_COST
+        }
 
-        return user_costs[user_id].copy()
+
+# ============================================================================
+# SESSION SNAPSHOT HELPER FUNCTION
+# ============================================================================
+
+def save_snapshot(
+    user_id: str,
+    session_id: str,
+    operation: str,
+    graph_state: GraphState,
+    user_query: str | None = None,
+    source_type: str | None = None
+):
+    """
+    Save session snapshot to Supabase DB.
+
+    Args:
+        user_id: User's unique ID
+        session_id: Session UUID
+        operation: 'generate', 'automode', 'cluster'
+        graph_state: Complete graph state (nodes + edges)
+        user_query: Optional user query for this operation
+        source_type: 'button_follow_up', 'text_selection_follow_up', 'suggested_follow_up', 'floating_chat'
+    """
+    sb = get_supabase()
+    if not sb:
+        logger.warning("Supabase not available, snapshot not saved")
+        return  # DB not available, skip silently
+
+    try:
+        # Insert snapshot using Supabase SDK
+        sb.table('session_snapshots').insert({
+            "user_id": user_id,
+            "session_id": session_id,
+            "operation": operation,
+            "source_type": source_type,
+            "user_query": user_query,
+            "graph_state": graph_state.model_dump()  # Supabase SDK handles JSON serialization
+        }).execute()
+
+        logger.info(f"📸 Saved snapshot: {operation} | session={session_id[:8]}... | nodes={len(graph_state.nodes)} | source={source_type}")
+    except Exception as e:
+        logger.error(f"Failed to save snapshot: {e}")
+        # Don't raise - snapshot failure shouldn't break the operation
 
 
 @app.post("/generate")
@@ -208,8 +408,8 @@ async def generate_endpoint(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # Generate session ID for this request
-        session_id = f"session-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+        # Use session ID from frontend request
+        session_id = request.session_id
         user_id = current_user["sub"]  # Google user ID
 
         system_prompt = (
@@ -271,9 +471,20 @@ In short: every answer should read like a compact, high-signal exploration node 
         input_tokens = usage.prompt_tokens
         output_tokens = usage.completion_tokens
         cost = calculate_cost(model, input_tokens, output_tokens)
-        user_cost_info = track_cost(user_id, session_id, model, input_tokens, output_tokens, cost)
+        user_cost_info = track_cost(user_id, session_id, model, "generate", input_tokens, output_tokens, cost)
 
         logger.info(f"💰 /generate cost: ${cost:.6f} | User total: ${user_cost_info['current_cost']:.4f}")
+
+        # Save snapshot to DB if graph state provided
+        if request.graph_state:
+            save_snapshot(
+                user_id=user_id,
+                session_id=session_id,
+                operation="generate",
+                graph_state=request.graph_state,
+                user_query=request.user_query,
+                source_type=request.source_type
+            )
 
         return {
             "title": parsed_response.title,
@@ -397,8 +608,8 @@ async def automode_endpoint(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # Generate session ID for this request
-        session_id = f"session-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+        # Use session ID from frontend request
+        session_id = request.session_id
         user_id = current_user["sub"]  # Google user ID
         model = "text-embedding-3-small"
 
@@ -446,12 +657,23 @@ async def automode_endpoint(
 
         # Track cost for all embeddings
         cost = calculate_cost(model, total_input_tokens, 0)
-        user_cost_info = track_cost(user_id, session_id, model, total_input_tokens, 0, cost)
+        user_cost_info = track_cost(user_id, session_id, model, "automode", total_input_tokens, 0, cost)
 
         # Get the best node title for logging
         best_node_title = request.nodes[best_node_id].title
         logger.info(f"🔍 SEARCH: '{request.query}' → '{best_node_title}' (similarity: {best_similarity:.3f})")
         logger.info(f"💰 /automode cost: ${cost:.6f} ({len(request.nodes) + 1} embeddings) | User total: ${user_cost_info['current_cost']:.4f}")
+
+        # Save snapshot to DB if graph state provided
+        if request.graph_state:
+            save_snapshot(
+                user_id=user_id,
+                session_id=session_id,
+                operation="automode",
+                graph_state=request.graph_state,
+                user_query=request.query,
+                source_type=request.source_type
+            )
 
         return {
             "node_id": best_node_id,
@@ -473,8 +695,8 @@ async def cluster_endpoint(
     current_user: dict = Depends(get_current_user)
 ):
     try:
-        # Generate session ID for this request
-        session_id = f"session-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+        # Use session ID from frontend request
+        session_id = request.session_id
         user_id = current_user["sub"]  # Google user ID
 
         # Track costs for embeddings and completions separately
@@ -522,11 +744,9 @@ async def cluster_endpoint(
             # Increase max_k to allow more clusters - use a more generous formula
             # For small datasets, allow more clusters; cap at reasonable max
             if n_nodes <= 10:
-                max_k = min(n_nodes - 1, 8)  # Allow up to 8 clusters for small datasets
-            elif n_nodes <= 20:
-                max_k = min(int(n_nodes * 0.6), 10)  # 60% of nodes, max 10
+                max_k = min(n_nodes - 1, 3)  # Allow up to 8 clusters for small datasets
             else:
-                max_k = min(int(n_nodes * 0.5), 15)  # 50% of nodes, max 15
+                max_k = min(int(n_nodes * 0.5), 5)  # 50% of nodes, max 15
             
             k_range = range(2, max_k + 1)  # Start from k=2 (minimum meaningful clusters)
             inertias = []
@@ -583,7 +803,7 @@ async def cluster_endpoint(
                 
                 # Find the last k where decrease is still significant
                 n_clusters_pct = k_range[0]  # Default to minimum
-                for k, decrease in decreases:
+                for k, decrease in decreases[:len(decreases)//3+1]:
                     if decrease > threshold:
                         n_clusters_pct = k  # Update to this k since it still has good decrease
                     # Continue to find the last good one (allows more clusters)
@@ -672,10 +892,10 @@ async def cluster_endpoint(
         total_cost = embedding_cost + completion_cost
 
         # Track embedding cost
-        track_cost(user_id, session_id, embedding_model, total_embedding_tokens, 0, embedding_cost)
+        track_cost(user_id, session_id, embedding_model, "cluster", total_embedding_tokens, 0, embedding_cost)
 
         # Track completion cost and get final user cost info
-        user_cost_info = track_cost(user_id, session_id, completion_model, total_completion_input_tokens, total_completion_output_tokens, completion_cost)
+        user_cost_info = track_cost(user_id, session_id, completion_model, "cluster", total_completion_input_tokens, total_completion_output_tokens, completion_cost)
 
         # Concise summary log with clear formatting
         logger.info(f"\n{'='*60}")
@@ -697,6 +917,17 @@ async def cluster_endpoint(
                 logger.info(f"       • ... and {len(node_titles) - 3} more")
         logger.info(f"💰 /cluster cost: ${total_cost:.6f} (embeddings: ${embedding_cost:.6f}, completions: ${completion_cost:.6f}) | User total: ${user_cost_info['current_cost']:.4f}")
         logger.info(f"{'='*60}\n")
+
+        # Save snapshot to DB if graph state provided
+        if request.graph_state:
+            save_snapshot(
+                user_id=user_id,
+                session_id=session_id,
+                operation="cluster",
+                graph_state=request.graph_state,
+                user_query=None,  # Clustering has no user query
+                source_type=None
+            )
 
         # Add cost_info to result
         result["cost_info"] = {

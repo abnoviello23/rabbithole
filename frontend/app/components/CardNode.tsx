@@ -159,7 +159,7 @@ export interface CardNodeData {
 }
 
 interface CardNodeComponentProps extends NodeProps<CardNodeData> {
-  onAddNote?: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
+  onAddNote?: (sourceId: string, userQuery: string, selectedContext?: string, color?: string, sourceType?: string) => void;
   // DEPRECATED: onAgentRequest?: (sourceId: string, userQuery: string, selectedContext?: string, color?: string) => void;
   onNodeClick?: (nodeId: string) => void;
   isInActivePath?: boolean;
@@ -599,7 +599,7 @@ useEffect(() => {
                               e.stopPropagation();
                               // Only create a new node if this subtopic hasn't been explored yet
                               if (!isActive) {
-                                onAddNote?.(id, subtopic.title, undefined, categoryColor);
+                                onAddNote?.(id, subtopic.title, undefined, categoryColor, 'suggested_follow_up');
                               } else if (matchingEdge && onNodeClick) {
                                 // If already explored, navigate to the existing node
                                 onNodeClick(matchingEdge.target);

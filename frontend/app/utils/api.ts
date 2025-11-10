@@ -8,9 +8,54 @@ export interface CostInfo {
   max_total: number;
 }
 
-export async function getCostInfo(): Promise<CostInfo> {
+// ============================================================================
+// MINIMAL SESSION STORAGE TYPES (matches backend models)
+// ============================================================================
+
+export interface MinimalEdgeData {
+  color?: string;
+  userQuery?: string;
+  selectedContext?: string;
+  sourceType?: string; // 'button_follow_up', 'text_selection_follow_up', 'suggested_follow_up'
+}
+
+export interface MinimalEdge {
+  source: string;
+  target: string;
+  label?: string;
+  data?: MinimalEdgeData;
+}
+
+export interface CardNodeDataMinimal {
+  title: string;
+  body: string;
+  image?: string;
+  isLoading?: boolean;
+  isRoot?: boolean;
+  isSubtopic?: boolean;
+  category?: string;
+  color?: string;
+  suggestedQuestions?: string[];
+  subtopics?: Subtopic[];
+  statusUpdates?: string[];
+  sourcesCount?: number;
+  sources?: Array<{ url: string; title?: string }>;
+}
+
+export interface MinimalNode {
+  id: string;
+  data: CardNodeDataMinimal;
+}
+
+export interface GraphState {
+  sessionId: string;
+  nodes: MinimalNode[];
+  edges: MinimalEdge[];
+}
+
+export async function getCostInfo(idToken?: string): Promise<CostInfo> {
   try {
-    const headers = await getAuthHeaders();
+    const headers = getAuthHeaders(idToken);
     const response = await fetch(`${API_BASE_URL}/cost`, {
       method: 'GET',
       headers,
@@ -58,6 +103,7 @@ export interface GenerateRequest {
   selected_context?: string;
   path: string;
   context: Record<string, NodeContext>;
+  session_id: string;
 }
 
 const PLACEHOLDER_IMAGES = [
@@ -69,17 +115,13 @@ const PLACEHOLDER_IMAGES = [
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 // Helper function to get auth headers
-async function getAuthHeaders(): Promise<HeadersInit> {
-  // Import dynamically to avoid SSR issues
-  const { getSession } = await import('next-auth/react');
-  const session = await getSession();
-
+function getAuthHeaders(idToken?: string): HeadersInit {
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
   };
 
-  if (session?.idToken) {
-    headers['Authorization'] = `Bearer ${session.idToken}`;
+  if (idToken) {
+    headers['Authorization'] = `Bearer ${idToken}`;
   }
 
   return headers;
@@ -89,10 +131,14 @@ export async function generateContent(
   userQuery: string,
   selectedContext: string | undefined,
   path: string,
-  context: Record<string, NodeContext>
+  context: Record<string, NodeContext>,
+  sessionId: string,
+  graphState?: GraphState,
+  sourceType?: string,
+  idToken?: string
 ): Promise<GeneratedContent> {
   try {
-    const headers = await getAuthHeaders();
+    const headers = getAuthHeaders(idToken);
     const response = await fetch(`${API_BASE_URL}/generate`, {
       method: 'POST',
       headers,
@@ -101,6 +147,9 @@ export async function generateContent(
         selected_context: selectedContext,
         path,
         context,
+        session_id: sessionId,
+        graph_state: graphState,
+        source_type: sourceType,
       } as GenerateRequest),
     });
 
@@ -135,16 +184,23 @@ export interface AutoModeResult {
 
 export async function autoMode(
   query: string,
-  nodes: Record<string, NodeContext>
+  nodes: Record<string, NodeContext>,
+  sessionId: string,
+  graphState?: GraphState,
+  sourceType?: string,
+  idToken?: string
 ): Promise<AutoModeResult> {
   try {
-    const headers = await getAuthHeaders();
+    const headers = getAuthHeaders(idToken);
     const response = await fetch(`${API_BASE_URL}/automode`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         query,
         nodes,
+        session_id: sessionId,
+        graph_state: graphState,
+        source_type: sourceType,
       }),
     });
 
@@ -172,15 +228,20 @@ export interface ClusterResult {
 }
 
 export async function clusterNodes(
-  nodes: Record<string, NodeContext>
+  nodes: Record<string, NodeContext>,
+  sessionId: string,
+  graphState?: GraphState,
+  idToken?: string
 ): Promise<{ clusters: ClusterResult; costInfo?: CostInfo }> {
   try {
-    const headers = await getAuthHeaders();
+    const headers = getAuthHeaders(idToken);
     const response = await fetch(`${API_BASE_URL}/cluster`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
         context: nodes,
+        session_id: sessionId,
+        graph_state: graphState,
       }),
     });
 
