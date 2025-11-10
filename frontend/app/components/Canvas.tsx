@@ -931,7 +931,7 @@ export default function Canvas() {
         {/* Chat panel toggle button */}
         <button
           onClick={() => setIsChatPanelOpen(!isChatPanelOpen)}
-          className="absolute top-4 right-4 z-50 flex items-center gap-2 px-4 py-2 bg-black/40 backdrop-blur-sm border border-white/20 rounded-lg text-white hover:bg-black/50 transition-colors"
+          className="absolute top-20 right-4 z-50 flex items-center gap-2 px-4 py-2 bg-black/40 backdrop-blur-sm border border-white/20 rounded-lg text-white hover:bg-black/50 transition-colors"
           title="View conversation path"
         >
           <FileText className="w-4 h-4" />

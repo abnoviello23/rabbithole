@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from openai import OpenAI
@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
+from auth import get_current_user
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -20,12 +21,21 @@ load_dotenv(env_path)
 
 app = FastAPI(title="RabbitHole Backend API", version="1.0.0")
 
+# Configure CORS for authentication
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+allowed_origins = [FRONTEND_URL]
+
+# Allow multiple origins if needed (e.g., dev and prod)
+if os.getenv("ADDITIONAL_FRONTEND_URLS"):
+    additional_urls = os.getenv("ADDITIONAL_FRONTEND_URLS", "").split(",")
+    allowed_origins.extend([url.strip() for url in additional_urls if url.strip()])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -67,7 +77,10 @@ class GenerateResponse(BaseModel):
 
 
 @app.post("/generate")
-async def generate_endpoint(request: GenerateRequest):
+async def generate_endpoint(
+    request: GenerateRequest,
+    current_user: dict = Depends(get_current_user)
+):
     try:
         system_prompt = (
             """
@@ -235,7 +248,10 @@ In short: every answer should read like a compact, high-signal exploration node 
 #             pass
 
 @app.post("/automode")
-async def automode_endpoint(request: AutoModeRequest):
+async def automode_endpoint(
+    request: AutoModeRequest,
+    current_user: dict = Depends(get_current_user)
+):
     try:
         # Embed the query
         query_embedding_response = client.embeddings.create(
@@ -289,7 +305,10 @@ async def automode_endpoint(request: AutoModeRequest):
 
 
 @app.post("/cluster")
-async def cluster_endpoint(request: ClusterRequest):
+async def cluster_endpoint(
+    request: ClusterRequest,
+    current_user: dict = Depends(get_current_user)
+):
     try:
         if not request.context:
             raise HTTPException(status_code=400, detail="Context dictionary is empty")

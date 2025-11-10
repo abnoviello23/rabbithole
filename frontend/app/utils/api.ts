@@ -38,6 +38,23 @@ const PLACEHOLDER_IMAGES = [
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+// Helper function to get auth headers
+async function getAuthHeaders(): Promise<HeadersInit> {
+  // Import dynamically to avoid SSR issues
+  const { getSession } = await import('next-auth/react');
+  const session = await getSession();
+
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+  };
+
+  if (session?.idToken) {
+    headers['Authorization'] = `Bearer ${session.idToken}`;
+  }
+
+  return headers;
+}
+
 export async function generateContent(
   userQuery: string,
   selectedContext: string | undefined,
@@ -45,11 +62,10 @@ export async function generateContent(
   context: Record<string, NodeContext>
 ): Promise<GeneratedContent> {
   try {
+    const headers = await getAuthHeaders();
     const response = await fetch(`${API_BASE_URL}/generate`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         user_query: userQuery,
         selected_context: selectedContext,
@@ -59,6 +75,9 @@ export async function generateContent(
     });
 
     if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error('Unauthorized - please sign in again');
+      }
       throw new Error(`API request failed: ${response.status} ${response.statusText}`);
     }
 
@@ -87,11 +106,10 @@ export async function autoMode(
   nodes: Record<string, NodeContext>
 ): Promise<AutoModeResult> {
   try {
+    const headers = await getAuthHeaders();
     const response = await fetch(`${API_BASE_URL}/automode`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         query,
         nodes,
@@ -99,6 +117,9 @@ export async function autoMode(
     });
 
     if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error('Unauthorized - please sign in again');
+      }
       throw new Error(`Auto mode request failed: ${response.status} ${response.statusText}`);
     }
 
@@ -121,17 +142,19 @@ export async function clusterNodes(
   nodes: Record<string, NodeContext>
 ): Promise<ClusterResult> {
   try {
+    const headers = await getAuthHeaders();
     const response = await fetch(`${API_BASE_URL}/cluster`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         context: nodes,
       }),
     });
 
     if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error('Unauthorized - please sign in again');
+      }
       throw new Error(`Cluster request failed: ${response.status} ${response.statusText}`);
     }
 
