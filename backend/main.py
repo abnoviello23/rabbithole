@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from openai import OpenAI
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 import os
 import logging
@@ -10,6 +10,9 @@ import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from auth import get_current_user
+import time
+import uuid
+from threading import Lock
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -38,7 +41,29 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# ============================================================================
+# COST TRACKING - Temporary in-memory storage (will be replaced with SQL DB)
+# ============================================================================
+
+# Pricing table for OpenAI models (per 1M tokens)
+PRICING = {
+    # Completion models
+    "gpt-4o-search-preview-2025-03-11": {"input": 2.50, "output": 10.00},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+
+    # Embedding models
+    "text-embedding-3-small": {"input": 0.02},
+}
+
+# Temporary storage (will be replaced with SQL database)
+cost_logs = []  # List of cost records: {user_id, session_id, timestamp, model, input_tokens, output_tokens, cost}
+user_costs = {}  # {user_id: {"current_cost": float, "max_cost": float}}
+user_costs_lock = Lock()  # Thread-safe access to user_costs
+
+# Default maximum cost per user (in dollars)
+DEFAULT_MAX_COST = 10.0
 
 
 class Node(BaseModel):
@@ -69,11 +94,112 @@ class Subtopic(BaseModel):
     category: str
 
 
+class CostInfo(BaseModel):
+    used: float  # Current total cost for user
+    max_total: float  # Maximum allowed cost for user
+
+
 class GenerateResponse(BaseModel):
     title: str
     response: str
     suggested_questions: list[str]  # List of 2 suggested follow-up questions
     subtopics: list[Subtopic]  # List of 2-3 subtopics with categories
+    cost_info: CostInfo
+
+
+# ============================================================================
+# COST TRACKING HELPER FUNCTIONS
+# ============================================================================
+
+def calculate_cost(model: str, input_tokens: int, output_tokens: int = 0) -> float:
+    """
+    Calculate cost based on model and token usage.
+
+    Args:
+        model: The model name
+        input_tokens: Number of input tokens used
+        output_tokens: Number of output tokens used (0 for embedding models)
+
+    Returns:
+        Cost in dollars
+    """
+    if model not in PRICING:
+        logger.warning(f"Unknown model '{model}' - cannot calculate cost")
+        return 0.0
+
+    pricing = PRICING[model]
+
+    # Calculate cost (pricing is per 1M tokens, so divide by 1,000,000)
+    cost = (input_tokens * pricing["input"]) / 1_000_000
+
+    if "output" in pricing and output_tokens > 0:
+        cost += (output_tokens * pricing["output"]) / 1_000_000
+
+    return cost
+
+
+def get_or_create_user_cost(user_id: str) -> dict:
+    """
+    Get user cost info, creating if it doesn't exist.
+    Thread-safe with lock.
+
+    Returns:
+        {"current_cost": float, "max_cost": float}
+    """
+    with user_costs_lock:
+        if user_id not in user_costs:
+            user_costs[user_id] = {
+                "current_cost": 0.0,
+                "max_cost": DEFAULT_MAX_COST
+            }
+        return user_costs[user_id].copy()
+
+
+def track_cost(
+    user_id: str,
+    session_id: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cost: float
+) -> dict:
+    """
+    Log cost record and update user's total cost atomically.
+
+    Args:
+        user_id: The user's unique ID
+        session_id: The session ID
+        model: Model name
+        input_tokens: Input tokens used
+        output_tokens: Output tokens used
+        cost: Cost in dollars
+
+    Returns:
+        Updated user cost info: {"current_cost": float, "max_cost": float}
+    """
+    # Log the cost record
+    cost_log = {
+        "user_id": user_id,
+        "session_id": session_id,
+        "timestamp": time.time(),
+        "model": model,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost": cost
+    }
+    cost_logs.append(cost_log)
+
+    # Atomically update user's total cost
+    with user_costs_lock:
+        if user_id not in user_costs:
+            user_costs[user_id] = {
+                "current_cost": 0.0,
+                "max_cost": DEFAULT_MAX_COST
+            }
+
+        user_costs[user_id]["current_cost"] += cost
+
+        return user_costs[user_id].copy()
 
 
 @app.post("/generate")
@@ -82,6 +208,10 @@ async def generate_endpoint(
     current_user: dict = Depends(get_current_user)
 ):
     try:
+        # Generate session ID for this request
+        session_id = f"session-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+        user_id = current_user["sub"]  # Google user ID
+
         system_prompt = (
             """
 You are an AI assistant designed for exploratory, mind-map-style conversations.
@@ -124,7 +254,7 @@ In short: every answer should read like a compact, high-signal exploration node 
         prompt += "\nProvide a response with a title (brief summary) and a detailed (max 45 words)response to the query. Also provide 2 suggested follow-up questions that would help the user explore this topic further."
         prompt += "\n\nAdditionally, suggest 2-3 related subtopics the user might want to explore next, grouped by category (e.g., 'Applications', 'Theory', 'History', 'Technical', 'Related Topics', etc.). Each subtopic should have a concise title (2-5 words) and a category label."
 
-        response = client.beta.chat.completions.parse(
+        response = await client.beta.chat.completions.parse(
             model="gpt-4o-search-preview-2025-03-11",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -135,11 +265,25 @@ In short: every answer should read like a compact, high-signal exploration node 
 
         parsed_response = response.choices[0].message.parsed
 
+        # Track cost
+        model = "gpt-4o-search-preview-2025-03-11"
+        usage = response.usage
+        input_tokens = usage.prompt_tokens
+        output_tokens = usage.completion_tokens
+        cost = calculate_cost(model, input_tokens, output_tokens)
+        user_cost_info = track_cost(user_id, session_id, model, input_tokens, output_tokens, cost)
+
+        logger.info(f"💰 /generate cost: ${cost:.6f} | User total: ${user_cost_info['current_cost']:.4f}")
+
         return {
             "title": parsed_response.title,
             "response": parsed_response.response,
             "suggested_questions": parsed_response.suggested_questions,
-            "subtopics": [{"title": st.title, "category": st.category} for st in parsed_response.subtopics[:3]]  # Enforce max 3
+            "subtopics": [{"title": st.title, "category": st.category} for st in parsed_response.subtopics[:3]],  # Enforce max 3
+            "cost_info": {
+                "used": user_cost_info["current_cost"],
+                "max_total": user_cost_info["max_cost"]
+            }
         }
 
     except Exception as e:
@@ -253,17 +397,26 @@ async def automode_endpoint(
     current_user: dict = Depends(get_current_user)
 ):
     try:
+        # Generate session ID for this request
+        session_id = f"session-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+        user_id = current_user["sub"]  # Google user ID
+        model = "text-embedding-3-small"
+
+        # Track total tokens for all embedding calls
+        total_input_tokens = 0
+
         # Embed the query
-        query_embedding_response = client.embeddings.create(
-            model="text-embedding-3-small",
+        query_embedding_response = await client.embeddings.create(
+            model=model,
             input=request.query
         )
         query_embedding = np.array(query_embedding_response.data[0].embedding)
-        
+        total_input_tokens += query_embedding_response.usage.total_tokens
+
         # Embed each node and calculate similarity
         best_node_id = None
         best_similarity = -1.0
-        
+
         for node_id, node in request.nodes.items():
             # Combine query and body for node embedding
             # Use query if available, otherwise use title
@@ -271,11 +424,12 @@ async def automode_endpoint(
             node_text = f"{node_query} {node.content}"
 
             # Get embedding for this node (no caching)
-            node_embedding_response = client.embeddings.create(
-                model="text-embedding-3-small",
+            node_embedding_response = await client.embeddings.create(
+                model=model,
                 input=node_text
             )
             node_embedding = np.array(node_embedding_response.data[0].embedding)
+            total_input_tokens += node_embedding_response.usage.total_tokens
 
             # Calculate cosine similarity
             similarity = np.dot(query_embedding, node_embedding) / (
@@ -286,19 +440,28 @@ async def automode_endpoint(
             if similarity > best_similarity:
                 best_similarity = similarity
                 best_node_id = node_id
-        
+
         if best_node_id is None:
             raise HTTPException(status_code=400, detail="No nodes provided")
-        
+
+        # Track cost for all embeddings
+        cost = calculate_cost(model, total_input_tokens, 0)
+        user_cost_info = track_cost(user_id, session_id, model, total_input_tokens, 0, cost)
+
         # Get the best node title for logging
         best_node_title = request.nodes[best_node_id].title
         logger.info(f"🔍 SEARCH: '{request.query}' → '{best_node_title}' (similarity: {best_similarity:.3f})")
-        
+        logger.info(f"💰 /automode cost: ${cost:.6f} ({len(request.nodes) + 1} embeddings) | User total: ${user_cost_info['current_cost']:.4f}")
+
         return {
             "node_id": best_node_id,
-            "similarity": float(best_similarity)
+            "similarity": float(best_similarity),
+            "cost_info": {
+                "used": user_cost_info["current_cost"],
+                "max_total": user_cost_info["max_cost"]
+            }
         }
-        
+
     except Exception as e:
         logger.error(f"Error in automode endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -310,26 +473,38 @@ async def cluster_endpoint(
     current_user: dict = Depends(get_current_user)
 ):
     try:
+        # Generate session ID for this request
+        session_id = f"session-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+        user_id = current_user["sub"]  # Google user ID
+
+        # Track costs for embeddings and completions separately
+        embedding_model = "text-embedding-3-small"
+        completion_model = "gpt-4o-mini"
+        total_embedding_tokens = 0
+        total_completion_input_tokens = 0
+        total_completion_output_tokens = 0
+
         if not request.context:
             raise HTTPException(status_code=400, detail="Context dictionary is empty")
-        
+
         node_ids = []
         embeddings = []
         node_texts = {}
-        
+
         # Create embeddings (no caching - always recompute)
         for node_id, node in request.context.items():
             node_query = node.query if node.query else ""
             node_text = f"{node_query} {node.title} {node.content}".strip()
             node_texts[node_id] = node_text
-            
+
             # Get embedding for this node (always create new)
-            embedding_response = client.embeddings.create(
-                model="text-embedding-3-small",
+            embedding_response = await client.embeddings.create(
+                model=embedding_model,
                 input=node_text
             )
             embedding = np.array(embedding_response.data[0].embedding)
-            
+            total_embedding_tokens += embedding_response.usage.total_tokens
+
             node_ids.append(node_id)
             embeddings.append(embedding)
         
@@ -462,8 +637,8 @@ async def cluster_endpoint(
                 f"Text snippets:\n{combined_text}\n\n"
                 f"Title (2-3 words, just the key identifier):"
             )
-            title_response = client.chat.completions.create(
-                model="gpt-4o-mini",
+            title_response = await client.chat.completions.create(
+                model=completion_model,
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that generates very concise, brief titles. Always prefer the shortest possible identifier - just a name, key term, or 2-3 word phrase. Never include colons, descriptions, or explanatory text."},
                     {"role": "user", "content": title_prompt}
@@ -472,6 +647,10 @@ async def cluster_endpoint(
             )
             cluster_title = title_response.choices[0].message.content.strip()
             cluster_title = cluster_title.strip('"').strip("'")
+
+            # Track completion tokens
+            total_completion_input_tokens += title_response.usage.prompt_tokens
+            total_completion_output_tokens += title_response.usage.completion_tokens
             
             # Post-process to extract first part before colon or other separators
             # Common separators: colon, dash, pipe, semicolon
@@ -487,6 +666,17 @@ async def cluster_endpoint(
             
             result[cluster_title] = node_id_list
         
+        # Track costs for both embeddings and completions
+        embedding_cost = calculate_cost(embedding_model, total_embedding_tokens, 0)
+        completion_cost = calculate_cost(completion_model, total_completion_input_tokens, total_completion_output_tokens)
+        total_cost = embedding_cost + completion_cost
+
+        # Track embedding cost
+        track_cost(user_id, session_id, embedding_model, total_embedding_tokens, 0, embedding_cost)
+
+        # Track completion cost and get final user cost info
+        user_cost_info = track_cost(user_id, session_id, completion_model, total_completion_input_tokens, total_completion_output_tokens, completion_cost)
+
         # Concise summary log with clear formatting
         logger.info(f"\n{'='*60}")
         logger.info(f"🧩 CLUSTERING COMPLETE")
@@ -505,12 +695,41 @@ async def cluster_endpoint(
                 for title in node_titles[:3]:
                     logger.info(f"       • {title}")
                 logger.info(f"       • ... and {len(node_titles) - 3} more")
+        logger.info(f"💰 /cluster cost: ${total_cost:.6f} (embeddings: ${embedding_cost:.6f}, completions: ${completion_cost:.6f}) | User total: ${user_cost_info['current_cost']:.4f}")
         logger.info(f"{'='*60}\n")
-        
+
+        # Add cost_info to result
+        result["cost_info"] = {
+            "used": user_cost_info["current_cost"],
+            "max_total": user_cost_info["max_cost"]
+        }
+
         return result
         
     except Exception as e:
         logger.error(f"Error in cluster endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/cost")
+async def get_cost_endpoint(
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get current cost info for the authenticated user.
+    """
+    try:
+        user_id = current_user["sub"]
+        user_cost_info = get_or_create_user_cost(user_id)
+
+        return {
+            "cost_info": {
+                "used": user_cost_info["current_cost"],
+                "max_total": user_cost_info["max_cost"]
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting cost info: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

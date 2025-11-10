@@ -3,12 +3,42 @@ export interface Subtopic {
   category: string;
 }
 
+export interface CostInfo {
+  used: number;
+  max_total: number;
+}
+
+export async function getCostInfo(): Promise<CostInfo> {
+  try {
+    const headers = await getAuthHeaders();
+    const response = await fetch(`${API_BASE_URL}/cost`, {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error('Unauthorized - please sign in again');
+      }
+      throw new Error(`Cost info request failed: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.cost_info;
+  } catch (error) {
+    console.error('Failed to get cost info:', error);
+    // Return default values on error
+    return { used: 0, max_total: 10.0 };
+  }
+}
+
 export interface GeneratedContent {
   title: string;
   body: string;
   image?: string;
   subtopics?: Subtopic[];
   suggestedQuestions?: string[];
+  costInfo?: CostInfo;
 }
 
 export interface NodeContext {
@@ -88,6 +118,7 @@ export async function generateContent(
       body: data.response || '',
       subtopics: data.subtopics || [],
       suggestedQuestions: data.suggested_questions || [],
+      costInfo: data.cost_info,
       // image: PLACEHOLDER_IMAGES[Math.floor(Math.random() * PLACEHOLDER_IMAGES.length)],
     };
   } catch (error) {
@@ -99,6 +130,7 @@ export async function generateContent(
 export interface AutoModeResult {
   node_id: string;
   similarity: number;
+  costInfo?: CostInfo;
 }
 
 export async function autoMode(
@@ -127,6 +159,7 @@ export async function autoMode(
     return {
       node_id: data.node_id,
       similarity: data.similarity,
+      costInfo: data.cost_info,
     };
   } catch (error) {
     console.error('Failed to run auto mode:', error);
@@ -140,7 +173,7 @@ export interface ClusterResult {
 
 export async function clusterNodes(
   nodes: Record<string, NodeContext>
-): Promise<ClusterResult> {
+): Promise<{ clusters: ClusterResult; costInfo?: CostInfo }> {
   try {
     const headers = await getAuthHeaders();
     const response = await fetch(`${API_BASE_URL}/cluster`, {
@@ -159,7 +192,14 @@ export async function clusterNodes(
     }
 
     const data = await response.json();
-    return data;
+
+    // Extract cost_info and return it separately from clusters
+    const { cost_info, ...clusters } = data;
+
+    return {
+      clusters: clusters as ClusterResult,
+      costInfo: cost_info,
+    };
   } catch (error) {
     console.error('Failed to cluster nodes:', error);
     throw error;

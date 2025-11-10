@@ -22,9 +22,10 @@ import { SessionManager } from './SessionManager';
 import { ChatPanel, ChatMessage } from './ChatPanel';
 import { FloatingChat } from './FloatingChat';
 import { ClusterLegend } from './ClusterLegend';
+import SignIn from './SignIn';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
-import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source } from '../utils/api';
+import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 
 const STORAGE_KEY = 'rabbithole-sessions';
@@ -109,6 +110,7 @@ export default function Canvas() {
   const [clusterData, setClusterData] = useState<ClusterResult | null>(null);
   const [isLegendVisible, setIsLegendVisible] = useState(true);
   const hasShownLegendRef = useRef(false);
+  const [costInfo, setCostInfo] = useState<CostInfo>({ used: 0, max_total: 10.0 });
 
   // Helper function to build path from root to a given node
   const buildPath = useCallback((targetNodeId: string, currentEdges: Edge[]): string[] => {
@@ -246,11 +248,16 @@ export default function Canvas() {
 
       // Generate content with context
       const content = await generateContent(userQuery, selectedContext, path, context);
-      
-      console.log('Generated content:', { 
-        title: content.title, 
-        hasSubtopics: !!content.subtopics, 
-        subtopicsCount: content.subtopics?.length 
+
+      // Update cost info if available
+      if (content.costInfo) {
+        setCostInfo(content.costInfo);
+      }
+
+      console.log('Generated content:', {
+        title: content.title,
+        hasSubtopics: !!content.subtopics,
+        subtopicsCount: content.subtopics?.length
       });
 
       // Update node with generated content
@@ -283,8 +290,11 @@ export default function Canvas() {
         // Call clustering asynchronously (don't block the UI)
         if (Object.keys(allNodesContext).length > 1) {
           clusterNodes(allNodesContext)
-            .then((clusters) => {
-              setClusterData(clusters);
+            .then((result) => {
+              setClusterData(result.clusters);
+              if (result.costInfo) {
+                setCostInfo(result.costInfo);
+              }
             })
             .catch((error) => {
               console.error('Clustering failed:', error);
@@ -523,8 +533,11 @@ export default function Canvas() {
         // Call clustering asynchronously
         if (Object.keys(allNodesContext).length > 1) {
           clusterNodes(allNodesContext)
-            .then((clusters) => {
-              setClusterData(clusters);
+            .then((result) => {
+              setClusterData(result.clusters);
+              if (result.costInfo) {
+                setCostInfo(result.costInfo);
+              }
             })
             .catch((error) => {
               console.error('Clustering failed:', error);
@@ -593,13 +606,21 @@ export default function Canvas() {
       }
 
       // Run both semantic search and clustering in parallel
-      const [autoModeResult, clusters] = await Promise.all([
+      const [autoModeResult, clusterResult] = await Promise.all([
         autoMode(query, context),
         clusterNodes(context)
       ]);
 
+      // Update cost info from both results
+      if (autoModeResult.costInfo) {
+        setCostInfo(autoModeResult.costInfo);
+      }
+      if (clusterResult.costInfo) {
+        setCostInfo(clusterResult.costInfo);
+      }
+
       // Store cluster data (logs are in backend)
-      setClusterData(clusters);
+      setClusterData(clusterResult.clusters);
 
       // Highlight and select the matched node
       setSelectedNodeId(autoModeResult.node_id);
@@ -742,8 +763,11 @@ export default function Canvas() {
           if (Object.keys(allNodesContext).length > 1) {
             hasShownLegendRef.current = false; // Reset so legend shows for loaded session
             clusterNodes(allNodesContext)
-              .then((clusters) => {
-                setClusterData(clusters);
+              .then((result) => {
+                setClusterData(result.clusters);
+                if (result.costInfo) {
+                  setCostInfo(result.costInfo);
+                }
               })
               .catch((error) => {
                 console.error('Clustering failed on session load:', error);
@@ -810,6 +834,21 @@ export default function Canvas() {
     // If no sessions, initialize with default
     setNodes(INITIAL_NODES);
   }, [setNodes, loadSessionsList, loadSession]);
+
+  // Fetch current cost info on mount
+  useEffect(() => {
+    const fetchCostInfo = async () => {
+      console.log('Fetching cost info...');
+      try {
+        const costData = await getCostInfo();
+        setCostInfo(costData);
+      } catch (error) {
+        console.error('Failed to fetch cost info on mount:', error);
+      }
+    };
+
+    fetchCostInfo();
+  }, []);
 
 
   // Apply cluster colors to nodes when clusterData changes
@@ -927,6 +966,9 @@ export default function Canvas() {
           onCreateSession={createNewSession}
           onDeleteSession={deleteSession}
         />
+
+        {/* User Info with Cost Display */}
+        <SignIn costInfo={costInfo} />
 
         {/* Chat panel toggle button */}
         <button

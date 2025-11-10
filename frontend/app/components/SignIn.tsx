@@ -1,9 +1,17 @@
 'use client';
 
 import { signIn, signOut, useSession } from 'next-auth/react';
-import { LogOut, User } from 'lucide-react';
+import { LogOut } from 'lucide-react';
+import { CostDisplay } from './CostDisplay';
 
-export default function SignIn() {
+interface SignInProps {
+  costInfo?: {
+    used: number;
+    max_total: number;
+  };
+}
+
+export default function SignIn({ costInfo }: SignInProps) {
   const { data: session, status } = useSession();
 
   if (status === 'loading') {
@@ -19,14 +27,13 @@ export default function SignIn() {
   if (session && session.user) {
     return (
       <div className="absolute top-4 right-4 z-50 flex items-center gap-3">
+        {/* Cost Display */}
+        {costInfo && (
+          <CostDisplay used={costInfo.used} maxTotal={costInfo.max_total} />
+        )}
+
+        {/* User Info */}
         <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-neutral-800 border border-white/10">
-          {session.user.image && (
-            <img
-              src={session.user.image}
-              alt={session.user.name || 'User'}
-              className="w-8 h-8 rounded-full"
-            />
-          )}
           <div className="flex flex-col">
             <span className="text-sm font-medium text-neutral-100">
               {session.user.name}
@@ -36,6 +43,8 @@ export default function SignIn() {
             </span>
           </div>
         </div>
+
+        {/* Sign Out Button */}
         <button
           onClick={() => signOut()}
           className="p-2 rounded-lg bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 text-red-400 hover:text-red-300 transition-colors"
