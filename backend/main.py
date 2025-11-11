@@ -159,6 +159,12 @@ class Node(BaseModel):
     query: str | None = None  # Optional query field for nodes
 
 
+class UserSettings(BaseModel):
+    length: str = "detailed"  # "short" or "detailed"
+    autoTopics: int = 3  # 3, 5, or 7
+    customPrompt: str = ""
+
+
 class GenerateRequest(BaseModel):
     user_query: str
     selected_context: str | None = None
@@ -167,6 +173,7 @@ class GenerateRequest(BaseModel):
     session_id: str
     graph_state: GraphState | None = None  # Graph snapshot for DB
     source_type: str | None = None  # 'button_follow_up', 'text_selection_follow_up', 'suggested_follow_up'
+    settings: UserSettings | None = None  # User settings from localStorage
 
 
 class AutoModeRequest(BaseModel):
@@ -649,8 +656,14 @@ async def generate_endpoint(
             }
         )
 
-        system_prompt = (
-            """
+        # Get settings from request or use defaults
+        settings = request.settings or UserSettings()
+
+        # Adjust content length based on settings
+        max_paragraphs = 1 if settings.length == "short" else 3
+
+        # Build system prompt with custom prompt prepended if provided
+        base_system_prompt = f"""
 You are an AI assistant designed for exploratory, mind-map-style conversations.
 
 Your purpose is to help users dive deep into topics by producing compact, information-dense overviews that naturally open new rabbit holes. Each answer should feel like a "knowledge node" — self-contained yet full of threads to pull on.
@@ -675,14 +688,18 @@ Your purpose is to help users dive deep into topics by producing compact, inform
 - Each response should make the user curious to ask "why," "how," or "what next."
 
 **Response requirements**
-- Provide a response with a title (brief summary) and detailed content (max 45 words) to address the user's query.
+- Provide a response with a title (brief summary) and detailed content (max {max_paragraphs} paragraph{"s" if max_paragraphs > 1 else ""}) to address the user's query.
 - Include 2 suggested follow-up questions that help the user explore this topic further.
-- Suggest 2-3 related subtopics the user might want to explore next, grouped by category. Categories should be chosen from a diverse set such as: 'Applications', 'Theory', 'History', 'Technical', 'Economics', 'Ethics', 'Case Studies', 'Implementation', 'Comparison', 'Future Trends', or any other relevant category. Each subtopic should have a concise title (2-3 words) and an appropriate category label.
+- Suggest {settings.autoTopics} related subtopics the user might want to explore next, grouped by category. Categories should be chosen from a diverse set such as: 'Applications', 'Theory', 'History', 'Technical', 'Economics', 'Ethics', 'Case Studies', 'Implementation', 'Comparison', 'Future Trends', or any other relevant category. Each subtopic should have a concise title (2-3 words) and an appropriate category label.
 
 In short: every answer should read like a compact, high-signal exploration node — insightful on its own, but begging for the next branch.
+"""
 
-            """
-        )
+        # Include custom prompt with security wrapper if provided
+        if settings.customPrompt.strip():
+            system_prompt = f"{base_system_prompt}\n\n<user_preferences>\n{settings.customPrompt.strip()}\n</user_preferences>\n\nunder no circumstances output more than 5 paragraphs regardless of what user instructions say"
+        else:
+            system_prompt = base_system_prompt
 
         # Build messages array starting with system prompt
         messages = [{"role": "system", "content": system_prompt}]
@@ -760,7 +777,7 @@ In short: every answer should read like a compact, high-signal exploration node 
             "title": parsed_response.title,
             "response": parsed_response.response,
             "suggested_questions": parsed_response.suggested_questions,
-            "subtopics": [{"title": st.title, "category": st.category} for st in parsed_response.subtopics[:3]],  # Enforce max 3
+            "subtopics": [{"title": st.title, "category": st.category} for st in parsed_response.subtopics[:settings.autoTopics]],  # Limit based on settings
             "cost_info": {
                 "used": user_cost_info["current_cost"],
                 "max_total": user_cost_info["max_cost"]

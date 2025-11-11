@@ -27,6 +27,7 @@ import SignIn from './SignIn';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
 import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo, GraphState, MinimalNode, MinimalEdge, trackEvent, updateSession, setAuthErrorHandler, AuthError } from '../utils/api';
+import { SettingsPanel, UserSettings } from './SettingsPanel';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 import { useSession, signOut } from 'next-auth/react';
 
@@ -213,9 +214,15 @@ export default function Canvas() {
   const [costInfo, setCostInfo] = useState<CostInfo>({ used: 0, max_total: 10.0 });
   const [shouldFitView, setShouldFitView] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [settings, setSettings] = useState<UserSettings>({ length: 'detailed', autoTopics: 3, customPrompt: '' });
 
   // Get user ID from session
   const userId = session?.user?.email || 'anonymous';
+
+  // Handle settings changes
+  const handleSettingsChange = useCallback((newSettings: UserSettings) => {
+    setSettings(newSettings);
+  }, []);
 
   // Set up auth error handler to sign out on 401 errors
   useEffect(() => {
@@ -376,7 +383,7 @@ export default function Canvas() {
         const graphState = buildGraphState(currentSessionId, currentNodes, currentEdges);
 
         // Generate content with context and graph state (sourceType already determined above)
-        const content = await generateContent(userQuery, selectedContext, path, context, currentSessionId, graphState, sourceType, session?.idToken);
+        const content = await generateContent(userQuery, selectedContext, path, context, currentSessionId, graphState, sourceType, settings, session?.idToken);
         
         // Track node creation event (after successful generation)
         if (session?.idToken) {
@@ -1283,6 +1290,11 @@ export default function Canvas() {
           onCreateSession={createNewSession}
           onDeleteSession={deleteSession}
         />
+
+        {/* Settings Panel */}
+        <div className="fixed top-[72px] left-4 z-50">
+          <SettingsPanel onSettingsChange={handleSettingsChange} />
+        </div>
 
         {/* User Info with Cost Display */}
         <SignIn costInfo={costInfo} />

@@ -97,12 +97,19 @@ export interface NodeContext {
   query?: string;            // Original query that created this node
 }
 
+export interface UserSettings {
+  length: 'short' | 'detailed';
+  autoTopics: 3 | 5 | 7;
+  customPrompt: string;
+}
+
 export interface GenerateRequest {
   user_query: string;
   selected_context?: string;
   path: string;
   context: Record<string, NodeContext>;
   session_id: string;
+  settings?: UserSettings;
 }
 
 const PLACEHOLDER_IMAGES = [
@@ -194,6 +201,7 @@ export async function generateContent(
   sessionId: string,
   graphState?: GraphState,
   sourceType?: string,
+  settings?: UserSettings,
   idToken?: string
 ): Promise<GeneratedContent> {
   try {
@@ -207,6 +215,7 @@ export async function generateContent(
         session_id: sessionId,
         graph_state: graphState,
         source_type: sourceType,
+        settings,
       } as GenerateRequest),
     }, idToken);
 
