@@ -5,10 +5,11 @@ import modal
 app = modal.App("main")
 
 # Define the image with dependencies and include backend files
+# Note: Run this from the backend/ directory
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install_from_requirements("requirements.txt")
-    .add_local_dir(".", remote_path="/app")
+    .add_local_dir(".", remote_path="/app")  # Adds all files in backend/ to /app in the image
 )
 
 # Create a Modal function that serves the FastAPI app
