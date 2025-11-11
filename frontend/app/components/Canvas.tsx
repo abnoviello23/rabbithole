@@ -24,11 +24,12 @@ import { ChatPanel, ChatMessage } from './ChatPanel';
 import { FloatingChat } from './FloatingChat';
 import { ClusterLegend } from './ClusterLegend';
 import SignIn from './SignIn';
-import { FileText } from 'lucide-react';
+import { FileText, PlayCircle } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
 import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo, GraphState, MinimalNode, MinimalEdge, trackEvent, updateSession, setAuthErrorHandler, AuthError } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 import { useSession, signOut } from 'next-auth/react';
+import { WalkthroughPanel, WalkthroughStep } from './WalkthroughPanel';
 
 const STORAGE_KEY = 'rabbithole-sessions';
 
@@ -180,6 +181,24 @@ function FitViewHelper({ shouldFitView, onFitViewComplete, nodes }: { shouldFitV
   return null;
 }
 
+// Helper component to center camera on a node when requested
+function FocusHelper({ nodeId, nodes }: { nodeId: string | null; nodes: Node[] }) {
+  const { setCenter } = useReactFlow();
+  useEffect(() => {
+    if (!nodeId) return;
+    const node = nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    const x = (node.position.x || 0) + (node.width || 360) / 2;
+    const y = (node.position.y || 0) + (node.height || 240) / 2;
+    // small timeout to ensure node measurements exist
+    const id = setTimeout(() => {
+      setCenter(x, y, { zoom: 1.2, duration: 400 });
+    }, 50);
+    return () => clearTimeout(id);
+  }, [nodeId, nodes, setCenter]);
+  return null;
+}
+
 interface SessionData {
   nodes: Node<CardNodeData>[];
   edges: Edge[];
@@ -213,6 +232,10 @@ export default function Canvas() {
   const [costInfo, setCostInfo] = useState<CostInfo>({ used: 0, max_total: 10.0 });
   const [shouldFitView, setShouldFitView] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [isWalkthroughOpen, setIsWalkthroughOpen] = useState(false);
+  const [walkthroughSteps, setWalkthroughSteps] = useState<WalkthroughStep[]>([]);
+  const [walkthroughIndex, setWalkthroughIndex] = useState(0);
+  const [focusTargetNodeId, setFocusTargetNodeId] = useState<string | null>(null);
 
   // Get user ID from session
   const userId = session?.user?.email || 'anonymous';
@@ -223,6 +246,32 @@ export default function Canvas() {
       console.log('Authentication error detected - signing out...');
       signOut({ callbackUrl: '/' });
     });
+  }, []);
+
+  // Find longest path from root to a leaf (heuristic)
+  const findLongestPath = useCallback((currentNodes: Node<CardNodeData>[], currentEdges: Edge[]): string[] => {
+    const childrenMap = new Map<string, string[]>();
+    currentEdges.forEach((e) => {
+      if (!childrenMap.has(e.source)) childrenMap.set(e.source, []);
+      childrenMap.get(e.source)!.push(e.target);
+    });
+    const roots = currentNodes.filter((n) => n.data?.isRoot).map((n) => n.id);
+    let best: string[] = [];
+    const dfs = (id: string, path: string[]) => {
+      const kids = childrenMap.get(id) || [];
+      if (kids.length === 0) {
+        if (path.length > best.length) best = [...path];
+        return;
+      }
+      kids.forEach((k) => dfs(k, [...path, k]));
+    };
+    roots.forEach((r) => dfs(r, [r]));
+    return best;
+  }, []);
+
+  // Focus camera on a node (delegated to FocusHelper)
+  const focusNode = useCallback((nodeId: string) => {
+    setFocusTargetNodeId(nodeId);
   }, []);
 
   // Helper function to build path from root to a given node
@@ -307,6 +356,62 @@ export default function Canvas() {
 
     return lineage;
   }, [nodes, edges, buildPath]);
+
+  // Build a simple, readable walkthrough from a path
+  const buildWalkthrough = useCallback((pathIds: string[], currentNodes: Node<CardNodeData>[], currentEdges: Edge[]): WalkthroughStep[] => {
+    const steps: WalkthroughStep[] = [];
+    for (let i = 0; i < pathIds.length; i++) {
+      const id = pathIds[i];
+      const node = currentNodes.find((n) => n.id === id);
+      if (!node) continue;
+      const title = node.data?.title || 'Untitled';
+      const body = (node.data?.body || '').replace(/\s+/g, ' ').trim();
+      const summary = body.split(' ').slice(0, 90).join(' ');
+      let bridge = '';
+      if (i > 0) {
+        const prev = pathIds[i - 1];
+        const edge = currentEdges.find((e) => e.source === prev && e.target === id);
+        const label = typeof edge?.label === 'string' ? edge?.label : '';
+        bridge = label ? `Connection: ${label}. ` : 'Connection: builds upon the previous idea. ';
+      }
+      steps.push({
+        nodeId: id,
+        title,
+        caption: `${bridge}${summary}`,
+      });
+    }
+    return steps;
+  }, []);
+
+  // Open/close and navigate walkthrough
+  const openWalkthrough = useCallback(() => {
+    const basePath = selectedNodeId ? buildPath(selectedNodeId, edges) : findLongestPath(nodes, edges);
+    if (!basePath || basePath.length === 0) return;
+    const steps = buildWalkthrough(basePath, nodes, edges);
+    setWalkthroughSteps(steps);
+    const startIndex = Math.min(1, Math.max(0, steps.length - 1));
+    setWalkthroughIndex(startIndex);
+    const step = steps[startIndex];
+    if (step) {
+      setSelectedNodeId(step.nodeId);
+      focusNode(step.nodeId);
+    }
+    setIsWalkthroughOpen(true);
+  }, [selectedNodeId, buildPath, findLongestPath, nodes, edges, buildWalkthrough, focusNode]);
+
+  const closeWalkthrough = useCallback(() => {
+    setIsWalkthroughOpen(false);
+  }, []);
+
+  const gotoWalkthroughStep = useCallback((index: number) => {
+    if (index < 0 || index >= walkthroughSteps.length) return;
+    setWalkthroughIndex(index);
+    const step = walkthroughSteps[index];
+    if (step) {
+      setSelectedNodeId(step.nodeId);
+      focusNode(step.nodeId);
+    }
+  }, [walkthroughSteps, focusNode]);
 
   const handleAddNote = useCallback(async (sourceId: string, userQuery: string, selectedContext?: string, color?: string, explicitSourceType?: string) => {
     const nodeId = `node-${Date.now()}`;
@@ -1363,6 +1468,7 @@ export default function Canvas() {
           onFitViewComplete={() => setShouldFitView(false)}
           nodes={nodes}
         />
+        <FocusHelper nodeId={focusTargetNodeId} nodes={nodes} />
       </ReactFlow>
           </CanvasContext.Provider>
         </div>
@@ -1373,6 +1479,18 @@ export default function Canvas() {
         isOpen={isChatPanelOpen}
         onClose={() => setIsChatPanelOpen(false)}
         lineage={buildLineage(selectedNodeId)}
+        onStartWalkthrough={openWalkthrough}
+      />
+
+      {/* Walkthrough Panel */}
+      <WalkthroughPanel
+        isOpen={isWalkthroughOpen}
+        onClose={closeWalkthrough}
+        steps={walkthroughSteps}
+        currentIndex={walkthroughIndex}
+        onPrev={() => gotoWalkthroughStep(Math.max(0, walkthroughIndex - 1))}
+        onNext={() => gotoWalkthroughStep(Math.min(walkthroughSteps.length - 1, walkthroughIndex + 1))}
+        onJump={(i) => gotoWalkthroughStep(i)}
       />
 
       {/* Floating Chat Button */}

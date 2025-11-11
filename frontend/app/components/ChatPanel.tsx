@@ -19,6 +19,7 @@ interface ChatPanelProps {
   isOpen: boolean;
   onClose: () => void;
   lineage: ChatMessage[];
+  onStartWalkthrough?: () => void;
 }
 
 interface MessageHighlight {
@@ -27,7 +28,7 @@ interface MessageHighlight {
   color: string;
 }
 
-export function ChatPanel({ isOpen, onClose, lineage }: ChatPanelProps) {
+export function ChatPanel({ isOpen, onClose, lineage, onStartWalkthrough }: ChatPanelProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const [highlights, setHighlights] = useState<MessageHighlight[]>([]);
@@ -219,6 +220,18 @@ export function ChatPanel({ isOpen, onClose, lineage }: ChatPanelProps) {
             </div>
           ))
         )}
+      </div>
+      
+      {/* Footer actions */}
+      <div className="p-4 border-t border-white/10">
+        <button
+          onClick={() => onStartWalkthrough && onStartWalkthrough()}
+          disabled={lineage.length === 0}
+          className="w-full px-4 py-3 rounded-lg bg-indigo-500/80 hover:bg-indigo-500 disabled:opacity-40 transition-colors text-white text-sm font-medium"
+          title="Start a guided walkthrough for this conversation path"
+        >
+          Start Walkthrough
+        </button>
       </div>
       </div>
     </>
