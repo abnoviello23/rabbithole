@@ -689,8 +689,9 @@ useEffect(() => {
 
         <Handle type="source" position={Position.Bottom} id="b" />
         {!data.isRoot && <Handle type="target" position={Position.Top} id="t" />}
+        </div>
 
-        {/* Selection popup - positioned relative to node */}
+        {/* Selection popup - positioned outside node to avoid overflow-hidden clipping */}
         {selectionPopup && (
           <div
             ref={selectionPopupRef}
@@ -699,15 +700,15 @@ useEffect(() => {
               left: `${selectionPopup.x}px`,
               top: `${selectionPopup.y}px`,
               transform: 'translate(-50%, calc(-100% - 8px))',
-              zIndex: 10,
+              zIndex: 9999,
               pointerEvents: 'auto',
             }}
-            className="rounded-xl border border-white/20 bg-black/40 backdrop-blur-sm text-neutral-100 shadow-2xl p-2 w-64"
+            className="rounded-xl border border-white/20 bg-black/95 backdrop-blur-sm text-neutral-100 shadow-2xl p-2 w-64"
             onMouseDown={(e) => e.stopPropagation()}
           >
             <input
               ref={(input) => { if (input) setTimeout(() => input.focus(), 0); }}
-              placeholder="question"
+              placeholder="Ask a follow-up question"
               className="w-full rounded-lg bg-transparent px-2 py-1 text-sm outline-none"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && e.currentTarget.value.trim() && selectionPopup) {
@@ -735,7 +736,6 @@ useEffect(() => {
             />
           </div>
         )}
-        </div>
 
         {/* Action buttons - outside node */}
         {!data.isLoading && !data.isRoot && !data.isSubtopic && (

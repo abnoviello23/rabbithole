@@ -39,3 +39,8 @@ body {
 .animate-fade-in {
   animation: fade-in 0.3s ease-out forwards;
 }
+
+/* Hide React Flow logo/attribution */
+.react-flow__attribution {
+  display: none !important;
+}

@@ -12,6 +12,7 @@ import ReactFlow, {
   Edge,
   MarkerType,
   PanOnScrollMode,
+  useReactFlow,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
@@ -147,6 +148,38 @@ const edgeTypes = {
   custom: CustomEdgeWrapper,
 };
 
+// Helper component to trigger fitView when needed
+function FitViewHelper({ shouldFitView, onFitViewComplete, nodes }: { shouldFitView: boolean; onFitViewComplete: () => void; nodes: Node[] }) {
+  const { fitView } = useReactFlow();
+
+  useEffect(() => {
+    if (shouldFitView) {
+      // Wait for nodes to be measured (have dimensions) before fitting view
+      const allMeasured = nodes.length > 0 && nodes.every((n) => n.width && n.height);
+      
+      if (allMeasured) {
+        // Small delay to ensure layout is complete
+        setTimeout(() => {
+          fitView({ padding: 1.5, duration: 300 });
+          onFitViewComplete();
+        }, 100);
+      } else {
+        // If nodes aren't measured yet, wait a bit longer and try again
+        const timeoutId = setTimeout(() => {
+          if (nodes.length > 0) {
+            fitView({ padding: 1.0, duration: 300 });
+            onFitViewComplete();
+          }
+        }, 500);
+        
+        return () => clearTimeout(timeoutId);
+      }
+    }
+  }, [shouldFitView, fitView, onFitViewComplete, nodes]);
+
+  return null;
+}
+
 interface SessionData {
   nodes: Node<CardNodeData>[];
   edges: Edge[];
@@ -162,7 +195,13 @@ export default function Canvas() {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState(INITIAL_EDGES);
   const [currentSessionName, setCurrentSessionName] = useState<string>('New Session');
-  const [currentSessionId, setCurrentSessionId] = useState<string>(crypto.randomUUID());
+  // Use lazy initializer to avoid hydration mismatch - only generate UUID on client
+  const [currentSessionId, setCurrentSessionId] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return crypto.randomUUID();
+    }
+    return ''; // Temporary value for SSR, will be set on mount
+  });
   const [sessions, setSessions] = useState<string[]>([]);
   const saveTimeoutRef = useRef<NodeJS.Timeout>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -171,6 +210,7 @@ export default function Canvas() {
   const [isLegendVisible, setIsLegendVisible] = useState(true);
   const hasShownLegendRef = useRef(false);
   const [costInfo, setCostInfo] = useState<CostInfo>({ used: 0, max_total: 10.0 });
+  const [shouldFitView, setShouldFitView] = useState(false);
 
   // Get user ID from session
   const userId = session?.user?.email || 'anonymous';
@@ -850,6 +890,7 @@ export default function Canvas() {
           // Load or generate sessionId
           const loadedSessionId = sessionData.sessionId || crypto.randomUUID();
           setCurrentSessionId(loadedSessionId);
+          setShouldFitView(true); // Trigger fitView to center the view
 
           // Run clustering on loaded nodes to get cluster colors
           const loadedNodes = sessionData.nodes || INITIAL_NODES;
@@ -899,6 +940,7 @@ export default function Canvas() {
     setCurrentSessionId(crypto.randomUUID()); // Generate new session ID
     setClusterData(null); // Clear cluster data for new session
     hasShownLegendRef.current = false; // Reset legend visibility state
+    setShouldFitView(true); // Trigger fitView to center the view
   }, [setNodes, setEdges]);
 
   // Delete a session
@@ -941,7 +983,15 @@ export default function Canvas() {
 
     // If no sessions, initialize with default
     setNodes(INITIAL_NODES);
+    setShouldFitView(true); // Trigger fitView to center the view on initial load
   }, [setNodes, loadSessionsList, loadSession]);
+
+  // Initialize session ID on mount if it's empty (from SSR)
+  useEffect(() => {
+    if (typeof window !== 'undefined' && !currentSessionId) {
+      setCurrentSessionId(crypto.randomUUID());
+    }
+  }, [currentSessionId]);
 
   // Fetch current cost info on mount
   useEffect(() => {
@@ -1137,6 +1187,11 @@ export default function Canvas() {
         <Background variant={BackgroundVariant.Dots} gap={32} size={1} color="#2a2a2a" />
               {/* <MiniMap pannable zoomable maskColor="rgba(0,0,0,0.6)" /> */}
               {/* <Controls /> */}
+        <FitViewHelper 
+          shouldFitView={shouldFitView} 
+          onFitViewComplete={() => setShouldFitView(false)}
+          nodes={nodes}
+        />
       </ReactFlow>
           </CanvasContext.Provider>
         </div>
