@@ -12,6 +12,8 @@ import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from auth import get_current_user
+import hashlib
+import time
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -76,6 +78,61 @@ app.add_middleware(
 )
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# ============================================================================
+# EMBEDDING CACHE (for faster re-clustering when nodes are added)
+# ============================================================================
+
+# Cache TTL: 24 hours (86400 seconds)
+# Embeddings are cached for 24 hours, then expire and will be re-embedded
+EMBEDDING_CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+
+# Cache entry: (embedding_array, timestamp)
+# In-memory cache: content_hash -> (embedding array, timestamp)
+_embedding_cache: dict[str, tuple[np.ndarray, float]] = {}
+
+def get_node_content_hash(node_query: str, node_title: str, node_content: str) -> str:
+    """Generate hash for node content to use as cache key"""
+    text = f"{node_query} {node_title} {node_content}".strip()
+    return hashlib.sha256(text.encode()).hexdigest()
+
+def get_cached_embedding(content_hash: str) -> np.ndarray | None:
+    """Get cached embedding if it exists and hasn't expired"""
+    cache_entry = _embedding_cache.get(content_hash)
+    if cache_entry is None:
+        return None
+    
+    embedding, timestamp = cache_entry
+    current_time = time.time()
+    
+    # Check if cache entry has expired
+    if current_time - timestamp > EMBEDDING_CACHE_TTL_SECONDS:
+        # Remove expired entry
+        del _embedding_cache[content_hash]
+        return None
+    
+    return embedding
+
+def cache_embedding(content_hash: str, embedding: np.ndarray):
+    """Store embedding in cache with current timestamp"""
+    _embedding_cache[content_hash] = (embedding, time.time())
+
+def is_cache_empty() -> bool:
+    """Check if cache is empty or all entries expired"""
+    if not _embedding_cache:
+        return True
+    
+    # Clean up expired entries and check if any remain
+    current_time = time.time()
+    expired_hashes = [
+        hash_key for hash_key, (_, timestamp) in _embedding_cache.items()
+        if current_time - timestamp > EMBEDDING_CACHE_TTL_SECONDS
+    ]
+    
+    for hash_key in expired_hashes:
+        del _embedding_cache[hash_key]
+    
+    return len(_embedding_cache) == 0
 
 # ============================================================================
 # COST TRACKING
@@ -980,23 +1037,93 @@ async def cluster_endpoint(
         node_ids = []
         embeddings = []
         node_texts = {}
+        cached_count = 0
+        new_count = 0
 
-        # Create embeddings (no caching - always recompute)
+        # Prepare all node texts and hashes
+        node_data = []
         for node_id, node in request.context.items():
             node_query = node.query if node.query else ""
             node_text = f"{node_query} {node.title} {node.content}".strip()
             node_texts[node_id] = node_text
+            content_hash = get_node_content_hash(node_query, node.title, node.content)
+            node_data.append((node_id, node_text, content_hash))
 
-            # Get embedding for this node (always create new)
-            embedding_response = await client.embeddings.create(
+        # Check if cache is empty (all expired or missing)
+        # If so, batch embed all nodes at once for efficiency
+        if is_cache_empty() and len(node_data) > 1:
+            logger.info(f"   Cache empty/expired - batch embedding {len(node_data)} nodes")
+            
+            # Batch embed all nodes at once
+            all_texts = [text for _, text, _ in node_data]
+            batch_response = await client.embeddings.create(
                 model=embedding_model,
-                input=node_text
+                input=all_texts  # OpenAI accepts list of inputs for batch processing
             )
-            embedding = np.array(embedding_response.data[0].embedding)
-            total_embedding_tokens += embedding_response.usage.total_tokens
-
-            node_ids.append(node_id)
-            embeddings.append(embedding)
+            
+            # Process batch results and cache them (maintain order)
+            for idx, (node_id, node_text, content_hash) in enumerate(node_data):
+                embedding = np.array(batch_response.data[idx].embedding)
+                cache_embedding(content_hash, embedding)
+                node_ids.append(node_id)
+                embeddings.append(embedding)
+                new_count += 1
+            
+            total_embedding_tokens += batch_response.usage.total_tokens
+            logger.info(f"   Batch embedded {new_count} nodes (cache was empty)")
+        else:
+            # Normal flow: check cache for each node, only embed missing ones
+            nodes_to_embed = []  # List of (index, node_id, node_text, content_hash)
+            
+            for idx, (node_id, node_text, content_hash) in enumerate(node_data):
+                cached_embedding = get_cached_embedding(content_hash)
+                
+                if cached_embedding is not None:
+                    # Use cached embedding (no API call needed)
+                    node_ids.append(node_id)
+                    embeddings.append(cached_embedding)
+                    cached_count += 1
+                else:
+                    # Need to embed this node
+                    nodes_to_embed.append((idx, node_id, node_text, content_hash))
+            
+            # Batch embed all missing nodes at once (if any)
+            if nodes_to_embed:
+                if len(nodes_to_embed) == 1:
+                    # Single node - use regular API call
+                    idx, node_id, node_text, content_hash = nodes_to_embed[0]
+                    embedding_response = await client.embeddings.create(
+                        model=embedding_model,
+                        input=node_text
+                    )
+                    embedding = np.array(embedding_response.data[0].embedding)
+                    total_embedding_tokens += embedding_response.usage.total_tokens
+                    cache_embedding(content_hash, embedding)
+                    # Insert into correct position
+                    node_ids.insert(idx, node_id)
+                    embeddings.insert(idx, embedding)
+                    new_count += 1
+                else:
+                    # Multiple nodes - batch embed them
+                    texts_to_embed = [text for _, _, text, _ in nodes_to_embed]
+                    batch_response = await client.embeddings.create(
+                        model=embedding_model,
+                        input=texts_to_embed
+                    )
+                    
+                    # Insert embeddings into correct positions
+                    for batch_idx, (original_idx, node_id, _, content_hash) in enumerate(nodes_to_embed):
+                        embedding = np.array(batch_response.data[batch_idx].embedding)
+                        cache_embedding(content_hash, embedding)
+                        node_ids.insert(original_idx, node_id)
+                        embeddings.insert(original_idx, embedding)
+                        new_count += 1
+                    
+                    total_embedding_tokens += batch_response.usage.total_tokens
+            
+            # Log cache performance
+            if cached_count > 0:
+                logger.info(f"   Embeddings: {cached_count} cached, {new_count} new (total: {len(node_ids)})")
         
         if len(node_ids) == 0:
             raise HTTPException(status_code=400, detail="No nodes to cluster")
