@@ -578,7 +578,7 @@ def save_snapshot(
         operation: 'generate', 'automode', 'cluster'
         graph_state: Complete graph state (nodes + edges)
         user_query: Optional user query for this operation
-        source_type: 'button_follow_up', 'text_selection_follow_up', 'suggested_follow_up', 'floating_chat'
+        source_type: 'button_follow_up', 'text_selection_follow_up', 'suggested_follow_up'
     """
     sb = get_supabase()
     if not sb:
@@ -674,31 +674,56 @@ Your purpose is to help users dive deep into topics by producing compact, inform
 - Stay neutral, factual, and current (use web sources if needed).
 - Each response should make the user curious to ask "why," "how," or "what next."
 
+**Response requirements**
+- Provide a response with a title (brief summary) and detailed content (max 45 words) to address the user's query.
+- Include 2 suggested follow-up questions that help the user explore this topic further.
+- Suggest 2-3 related subtopics the user might want to explore next, grouped by category. Categories should be chosen from a diverse set such as: 'Applications', 'Theory', 'History', 'Technical', 'Economics', 'Ethics', 'Case Studies', 'Implementation', 'Comparison', 'Future Trends', or any other relevant category. Each subtopic should have a concise title (2-3 words) and an appropriate category label.
+
 In short: every answer should read like a compact, high-signal exploration node — insightful on its own, but begging for the next branch.
 
             """
         )
 
-        prompt = "\n".join([f"{request.context[node_id].title}: {request.context[node_id].content}" for node_id in request.path.split("/") if node_id in request.context])
+        # Build messages array starting with system prompt
+        messages = [{"role": "system", "content": system_prompt}]
 
-        # Add query with optional selected context
+        # Add conversation history as alternating user/assistant messages
+        for node_id in request.path.split("/"):
+            if node_id in request.context:
+                node = request.context[node_id]
+                # User turn: query (or title as fallback if query is None)
+                user_msg = node.query if node.query else node.title
+                messages.append({"role": "user", "content": user_msg})
+
+                # Assistant turn: title + content
+                assistant_msg = f"**{node.title}**\n\n{node.content}"
+                messages.append({"role": "assistant", "content": assistant_msg})
+
+        # Add current user query (with optional selected context and source type prefix)
         if request.selected_context:
-            prompt += f"\n\nUser selected the following text: \"{request.selected_context}\""
-            prompt += f"\nUser's question about the selection: {request.user_query}"
+            current_query = f"User selected the following text: \"{request.selected_context}\"\n\n{request.user_query}"
         else:
-            prompt += f"\n\nUser's question: {request.user_query}"
+            # Add "I am curious about" prefix for related topic clicks (suggested_follow_up)
+            if request.source_type == 'suggested_follow_up':
+                current_query = f"I am curious about {request.user_query}"
+                print("**" * 100)
+            else:
+                current_query = request.user_query
 
-        prompt += "\nProvide a response with a title (brief summary) and a detailed (max 45 words)response to the query. Also provide 2 suggested follow-up questions that would help the user explore this topic further."
-        prompt += "\n\nAdditionally, suggest 2-3 related subtopics the user might want to explore next, grouped by category (e.g., 'Applications', 'Theory', 'History', 'Technical', 'Related Topics', etc.). Each subtopic should have a concise title (2-5 words) and a category label."
+        messages.append({"role": "user", "content": current_query})
 
         response = await client.beta.chat.completions.parse(
             model="gpt-4o-search-preview-2025-03-11",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
+            messages=messages,
             response_format=GenerateResponse
         )
+
+        print('--------------------------------')
+        print('MESSAGES:')
+        for i, msg in enumerate(messages):
+            print(f"\n[{i}] Role: {msg['role']}")
+            print(f"Content: {msg['content']}")
+        print('--------------------------------')
 
         parsed_response = response.choices[0].message.parsed
 
@@ -710,7 +735,7 @@ In short: every answer should read like a compact, high-signal exploration node 
         cost = calculate_cost(model, input_tokens, output_tokens)
         user_cost_info = track_cost(user_id, session_id, model, "generate", input_tokens, output_tokens, cost)
 
-        logger.info(f"💰 /generate cost: ${cost:.6f} | User total: ${user_cost_info['current_cost']:.4f}")
+        logger.info(f"💰 /generate input tokens: {input_tokens} | output tokens: {output_tokens} | cost: ${cost:.6f} | User total: ${user_cost_info['current_cost']:.4f}")
 
         # Save snapshot to DB if graph state provided
         if request.graph_state:
