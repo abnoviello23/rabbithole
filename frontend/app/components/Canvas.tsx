@@ -26,7 +26,7 @@ import { ClusterLegend } from './ClusterLegend';
 import SignIn from './SignIn';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
-import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo, GraphState, MinimalNode, MinimalEdge } from '../utils/api';
+import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo, GraphState, MinimalNode, MinimalEdge, trackEvent, updateSession } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 import { useSession } from 'next-auth/react';
 
@@ -192,8 +192,9 @@ interface Sessions {
 
 export default function Canvas() {
   const { data: session } = useSession();
+  // Initialize with empty arrays to show UI immediately, then load session data
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(INITIAL_EDGES);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [currentSessionName, setCurrentSessionName] = useState<string>('New Session');
   // Use lazy initializer to avoid hydration mismatch - only generate UUID on client
   const [currentSessionId, setCurrentSessionId] = useState<string>(() => {
@@ -211,6 +212,7 @@ export default function Canvas() {
   const hasShownLegendRef = useRef(false);
   const [costInfo, setCostInfo] = useState<CostInfo>({ used: 0, max_total: 10.0 });
   const [shouldFitView, setShouldFitView] = useState(false);
+  const [isInitialized, setIsInitialized] = useState(false);
 
   // Get user ID from session
   const userId = session?.user?.email || 'anonymous';
@@ -367,6 +369,27 @@ export default function Canvas() {
 
         // Generate content with context and graph state (sourceType already determined above)
         const content = await generateContent(userQuery, selectedContext, path, context, currentSessionId, graphState, sourceType, session?.idToken);
+        
+        // Track node creation event (after successful generation)
+        if (session?.idToken) {
+          trackEvent({
+            event_type: 'node_create',
+            event_category: 'interaction',
+            session_id: currentSessionId,
+            metadata: {
+              node_id: nodeId,
+              source_node_id: sourceId,
+              source_type: sourceType,
+              has_selected_context: !!selectedContext,
+              query_length: userQuery.length,
+              path_depth: pathIds.length,
+              context_nodes: Object.keys(context).length,
+            },
+          }, session.idToken).catch(err => {
+            console.debug('Failed to track node creation:', err);
+          });
+        }
+        
       // Update cost info if available
       if (content.costInfo) {
         setCostInfo(content.costInfo);
@@ -713,7 +736,21 @@ export default function Canvas() {
   const handleNodeClick = useCallback((nodeId: string) => {
     setSelectedNodeId(nodeId);
     setIsChatPanelOpen(true);
-  }, []);
+    
+    // Track node click event
+    if (session?.idToken) {
+      trackEvent({
+        event_type: 'node_click',
+        event_category: 'interaction',
+        session_id: currentSessionId,
+        metadata: {
+          node_id: nodeId,
+        },
+      }, session.idToken).catch(err => {
+        console.debug('Failed to track node click:', err);
+      });
+    }
+  }, [session, currentSessionId]);
 
   // Handle floating chat query submission
   const handleFloatingChatQuery = useCallback(async (query: string) => {
@@ -852,13 +889,25 @@ export default function Canvas() {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(allSessions));
         loadSessionsList();
 
+        // Sync session metadata to backend
+        if (session?.idToken && currentSessionId) {
+          updateSession({
+            session_id: currentSessionId,
+            name: name,
+            node_count: filteredNodes.length,
+            edge_count: filteredEdges.length,
+          }, session.idToken).catch(err => {
+            console.debug('Failed to sync session to backend:', err);
+          });
+        }
+
         // Note: Backend snapshots are now saved automatically with each API call
         // No need to explicitly save here since localStorage is source of truth
       } catch (error) {
         console.error('Failed to save session:', error);
       }
     }, 500);
-  }, [loadSessionsList, currentSessionId]);
+  }, [loadSessionsList, currentSessionId, session]);
 
   // Load a specific session
   const loadSession = useCallback((name: string) => {
@@ -892,7 +941,8 @@ export default function Canvas() {
           setCurrentSessionId(loadedSessionId);
           setShouldFitView(true); // Trigger fitView to center the view
 
-          // Run clustering on loaded nodes to get cluster colors
+          // Defer clustering to after initial render to avoid blocking UI
+          // Run clustering asynchronously after a short delay to let UI render first
           const loadedNodes = sessionData.nodes || INITIAL_NODES;
           const allNodesContext: Record<string, NodeContext> = {};
           loadedNodes.forEach((node) => {
@@ -905,21 +955,24 @@ export default function Canvas() {
             }
           });
           
-          // Cluster the loaded nodes if there are enough nodes
+          // Cluster the loaded nodes if there are enough nodes (deferred to avoid blocking)
           if (Object.keys(allNodesContext).length > 1) {
             hasShownLegendRef.current = false; // Reset so legend shows for loaded session
-            // Build graph state for clustering
-            const clusterGraphState = buildGraphState(loadedSessionId, filteredNodes, filteredEdges);
-            clusterNodes(allNodesContext, loadedSessionId, clusterGraphState, session?.idToken)
-              .then((result) => {
-                setClusterData(result.clusters);
-                if (result.costInfo) {
-                  setCostInfo(result.costInfo);
-                }
-              })
-              .catch((error) => {
-                console.error('Clustering failed on session load:', error);
-              });
+            // Defer clustering to after initial render
+            setTimeout(() => {
+              // Build graph state for clustering
+              const clusterGraphState = buildGraphState(loadedSessionId, filteredNodes, filteredEdges);
+              clusterNodes(allNodesContext, loadedSessionId, clusterGraphState, session?.idToken)
+                .then((result) => {
+                  setClusterData(result.clusters);
+                  if (result.costInfo) {
+                    setCostInfo(result.costInfo);
+                  }
+                })
+                .catch((error) => {
+                  console.error('Clustering failed on session load:', error);
+                });
+            }, 100); // Small delay to let UI render first
           } else {
             // Clear cluster data if not enough nodes
             setClusterData(null);
@@ -934,14 +987,39 @@ export default function Canvas() {
 
   // Create new session
   const createNewSession = useCallback(() => {
+    const newSessionId = crypto.randomUUID();
     setNodes(INITIAL_NODES);
     setEdges(INITIAL_EDGES);
     setCurrentSessionName('New Session');
-    setCurrentSessionId(crypto.randomUUID()); // Generate new session ID
+    setCurrentSessionId(newSessionId);
     setClusterData(null); // Clear cluster data for new session
     hasShownLegendRef.current = false; // Reset legend visibility state
     setShouldFitView(true); // Trigger fitView to center the view
-  }, [setNodes, setEdges]);
+    
+    // Track session creation event
+    if (session?.idToken) {
+      trackEvent({
+        event_type: 'session_create',
+        event_category: 'session',
+        session_id: newSessionId,
+        metadata: {
+          name: 'New Session',
+        },
+      }, session.idToken).catch(err => {
+        console.debug('Failed to track session creation:', err);
+      });
+      
+      // Create session in backend
+      updateSession({
+        session_id: newSessionId,
+        name: 'New Session',
+        node_count: INITIAL_NODES.length,
+        edge_count: INITIAL_EDGES.length,
+      }, session.idToken).catch(err => {
+        console.debug('Failed to create session in backend:', err);
+      });
+    }
+  }, [setNodes, setEdges, session]);
 
   // Delete a session
   const deleteSession = useCallback((name: string) => {
@@ -950,19 +1028,39 @@ export default function Canvas() {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored) {
         const allSessions: Sessions = JSON.parse(stored);
+        const sessionData = allSessions[name];
+        const sessionId = sessionData?.sessionId;
+        
         delete allSessions[name];
         localStorage.setItem(STORAGE_KEY, JSON.stringify(allSessions));
         loadSessionsList();
+        
+        // Track session deletion event
+        if (session?.idToken && sessionId) {
+          trackEvent({
+            event_type: 'session_delete',
+            event_category: 'session',
+            session_id: sessionId,
+            metadata: {
+              name: name,
+            },
+          }, session.idToken).catch(err => {
+            console.debug('Failed to track session deletion:', err);
+          });
+        }
       }
     } catch (error) {
       console.error('Failed to delete session:', error);
     }
-  }, [loadSessionsList]);
+  }, [loadSessionsList, session]);
 
   // Initialize: Load sessions list and last session on mount
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined' || isInitialized) return;
+    
+    setIsInitialized(true);
 
+    // Load sessions list (non-blocking)
     loadSessionsList();
 
     // Try to load the first available session
@@ -973,6 +1071,7 @@ export default function Canvas() {
         const sessionNames = Object.keys(allSessions);
         if (sessionNames.length > 0) {
           const lastSession = sessionNames[sessionNames.length - 1];
+          // Load session immediately to show content
           loadSession(lastSession);
           return;
         }
@@ -981,10 +1080,11 @@ export default function Canvas() {
       console.error('Failed to load initial session:', error);
     }
 
-    // If no sessions, initialize with default
+    // If no sessions, initialize with default (show immediately)
     setNodes(INITIAL_NODES);
+    setEdges(INITIAL_EDGES);
     setShouldFitView(true); // Trigger fitView to center the view on initial load
-  }, [setNodes, loadSessionsList, loadSession]);
+  }, [setNodes, setEdges, loadSessionsList, loadSession, isInitialized]);
 
   // Initialize session ID on mount if it's empty (from SSR)
   useEffect(() => {
@@ -993,19 +1093,22 @@ export default function Canvas() {
     }
   }, [currentSessionId]);
 
-  // Fetch current cost info on mount
+  // Fetch current cost info on mount (deferred to avoid blocking initial render)
   useEffect(() => {
-    const fetchCostInfo = async () => {
-      console.log('Fetching cost info...');
-      try {
-        const costData = await getCostInfo(session?.idToken);
-        setCostInfo(costData);
-      } catch (error) {
-        console.error('Failed to fetch cost info on mount:', error);
-      }
-    };
+    if (!session?.idToken) return;
+    
+    // Defer cost info fetch to after initial render
+    const timeoutId = setTimeout(() => {
+      getCostInfo(session.idToken)
+        .then((costData) => {
+          setCostInfo(costData);
+        })
+        .catch((error) => {
+          console.error('Failed to fetch cost info on mount:', error);
+        });
+    }, 200); // Small delay to prioritize UI rendering
 
-    fetchCostInfo();
+    return () => clearTimeout(timeoutId);
   }, [session]);
 
 
@@ -1085,10 +1188,13 @@ export default function Canvas() {
     }
   }, [nodes, edges, currentSessionName, generateSessionName, saveSession]);
 
-  // Re-layout whenever node dimensions or loading state changes
+  // Re-layout whenever node dimensions or loading state changes (debounced for performance)
   useEffect(() => {
     const allMeasured = nodes.every((n) => n.width && n.height);
-    if (allMeasured && nodes.length > 0) {
+    if (!allMeasured || nodes.length === 0) return;
+
+    // Debounce layout calculation to avoid excessive recalculations
+    const timeoutId = setTimeout(() => {
       const layoutedNodes = layoutNodes(nodes, edges);
 
       // Check if positions actually changed to avoid infinite loop
@@ -1102,7 +1208,9 @@ export default function Canvas() {
       if (positionsChanged) {
         setNodes(layoutedNodes);
       }
-    }
+    }, 50); // Small debounce to batch rapid changes
+
+    return () => clearTimeout(timeoutId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes.map(n => `${n.id}:${n.width}:${n.height}:${n.data?.isLoading}`).join(','), edges.map(e => `${e.id}:${e.source}:${e.target}`).join(',')]);
 
@@ -1130,7 +1238,19 @@ export default function Canvas() {
 
         {/* Chat panel toggle button */}
         <button
-          onClick={() => setIsChatPanelOpen(!isChatPanelOpen)}
+          onClick={() => {
+            setIsChatPanelOpen(!isChatPanelOpen);
+            // Track chat panel toggle
+            if (session?.idToken) {
+              trackEvent({
+                event_type: isChatPanelOpen ? 'chat_close' : 'chat_open',
+                event_category: 'ui',
+                session_id: currentSessionId,
+              }, session.idToken).catch(err => {
+                console.debug('Failed to track chat toggle:', err);
+              });
+            }
+          }}
           className="absolute top-20 right-4 z-50 flex items-center gap-2 px-4 py-2 bg-black/40 backdrop-blur-sm border border-white/20 rounded-lg text-white hover:bg-black/50 transition-colors"
           title="View conversation path"
         >

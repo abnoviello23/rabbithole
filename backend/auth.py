@@ -28,6 +28,7 @@ def verify_google_token(token: str) -> dict:
             "name": idinfo.get("name"),
             "sub": idinfo.get("sub"),  # Google user ID
             "email_verified": idinfo.get("email_verified", False),
+            "picture": idinfo.get("picture"),  # Profile picture URL
         }
     except ValueError as e:
         # Token is invalid

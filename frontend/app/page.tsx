@@ -8,8 +8,8 @@ export default function Home() {
 
   if (status === 'loading') {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-        <div className="text-neutral-400">Loading...</div>
+      <div className="flex min-h-screen items-center justify-center bg-black">
+        <div className="text-neutral-400 animate-pulse">Loading...</div>
       </div>
     );
   }

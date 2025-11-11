@@ -195,6 +195,153 @@ class GraphState(BaseModel):
 
 
 # ============================================================================
+# USER PROFILE HELPER FUNCTIONS
+# ============================================================================
+
+def upsert_user_profile(user_id: str, email: str | None = None, name: str | None = None, picture_url: str | None = None):
+    """
+    Create or update user profile in database.
+    
+    Args:
+        user_id: Google OAuth user ID (sub)
+        email: User email address
+        name: User display name
+        picture_url: User profile picture URL
+    """
+    sb = get_supabase()
+    if not sb:
+        logger.warning("Supabase not available, user profile not saved")
+        return
+    
+    try:
+        # Upsert user profile (Supabase Python client uses on_conflict parameter)
+        user_data = {
+            "user_id": user_id,
+            "email": email or user_id,  # Fallback to user_id if email not provided
+            "name": name,
+            "picture_url": picture_url,
+        }
+        
+        # Try to update existing user first
+        existing = sb.table('users').select('user_id').eq('user_id', user_id).execute()
+        if existing.data:
+            # Update existing user
+            sb.table('users').update({
+                "email": email or user_id,
+                "name": name,
+                "picture_url": picture_url,
+                "last_seen_at": "now()",
+                "updated_at": "now()"
+            }).eq('user_id', user_id).execute()
+        else:
+            # Insert new user
+            user_data.update({
+                "last_seen_at": "now()",
+                "updated_at": "now()"
+            })
+            sb.table('users').insert(user_data).execute()
+        
+        logger.debug(f"✅ Updated user profile: {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to upsert user profile: {e}")
+
+
+def upsert_session(
+    user_id: str,
+    session_id: str,
+    name: str | None = None,
+    node_count: int | None = None,
+    edge_count: int | None = None
+):
+    """
+    Create or update session metadata in database.
+    
+    Args:
+        user_id: User ID
+        session_id: Session UUID
+        name: Session name (optional)
+        node_count: Current node count (optional)
+        edge_count: Current edge count (optional)
+    """
+    sb = get_supabase()
+    if not sb:
+        logger.warning("Supabase not available, session not saved")
+        return
+    
+    try:
+        session_data = {
+            "session_id": session_id,
+            "user_id": user_id,
+            "last_accessed_at": "now()",
+            "updated_at": "now()",
+            "is_active": True
+        }
+        
+        if name:
+            session_data["name"] = name
+        if node_count is not None:
+            session_data["node_count"] = node_count
+        if edge_count is not None:
+            session_data["edge_count"] = edge_count
+        
+        # Upsert session (check if exists first)
+        existing = sb.table('sessions').select('session_id').eq('session_id', session_id).execute()
+        if existing.data:
+            # Update existing session (remove session_id from update data)
+            update_data = {k: v for k, v in session_data.items() if k != 'session_id'}
+            sb.table('sessions').update(update_data).eq('session_id', session_id).execute()
+        else:
+            # Insert new session
+            sb.table('sessions').insert(session_data).execute()
+        
+        logger.debug(f"✅ Updated session: {session_id}")
+    except Exception as e:
+        logger.error(f"Failed to upsert session: {e}")
+
+
+def track_user_event(
+    user_id: str,
+    event_type: str,
+    event_category: str,
+    session_id: str | None = None,
+    metadata: dict | None = None
+):
+    """
+    Track user interaction event for analytics.
+    
+    Args:
+        user_id: User ID
+        event_type: Type of event (node_click, node_create, query, etc.)
+        event_category: Category (interaction, api_call, session, ui, error)
+        session_id: Session ID (optional)
+        metadata: Additional event data (optional)
+    """
+    sb = get_supabase()
+    if not sb:
+        logger.warning("Supabase not available, event not tracked")
+        return
+    
+    try:
+        event_data = {
+            "user_id": user_id,
+            "event_type": event_type,
+            "event_category": event_category,
+            "metadata": metadata or {},
+            "created_at": "now()"
+        }
+        
+        if session_id:
+            event_data["session_id"] = session_id
+        
+        sb.table('user_events').insert(event_data).execute()
+        
+        logger.debug(f"📊 Tracked event: {event_type} ({event_category})")
+    except Exception as e:
+        logger.error(f"Failed to track event: {e}")
+        # Don't raise - event tracking failure shouldn't break operations
+
+
+# ============================================================================
 # COST TRACKING HELPER FUNCTIONS
 # ============================================================================
 
@@ -407,6 +554,43 @@ async def generate_endpoint(
         # Use session ID from frontend request
         session_id = request.session_id
         user_id = current_user["sub"]  # Google user ID
+        
+        # Update user profile and session metadata
+        upsert_user_profile(
+            user_id=user_id,
+            email=current_user.get("email"),
+            name=current_user.get("name"),
+            picture_url=current_user.get("picture")
+        )
+        
+        # Update session metadata (extract node/edge counts from graph_state if provided)
+        node_count = None
+        edge_count = None
+        if request.graph_state:
+            node_count = len(request.graph_state.nodes)
+            edge_count = len(request.graph_state.edges)
+        
+        upsert_session(
+            user_id=user_id,
+            session_id=session_id,
+            node_count=node_count,
+            edge_count=edge_count
+        )
+        
+        # Track API call event
+        track_user_event(
+            user_id=user_id,
+            event_type="generate",
+            event_category="api_call",
+            session_id=session_id,
+            metadata={
+                "source_type": request.source_type,
+                "has_selected_context": bool(request.selected_context),
+                "query_length": len(request.user_query) if request.user_query else 0,
+                "path_length": len(request.path.split("/")) if request.path else 0,
+                "context_nodes": len(request.context)
+            }
+        )
 
         system_prompt = (
             """
@@ -480,6 +664,14 @@ In short: every answer should read like a compact, high-signal exploration node 
                 graph_state=request.graph_state,
                 user_query=request.user_query,
                 source_type=request.source_type
+            )
+            
+            # Update session stats from graph state
+            upsert_session(
+                user_id=user_id,
+                session_id=session_id,
+                node_count=len(request.graph_state.nodes),
+                edge_count=len(request.graph_state.edges)
             )
 
         return {
@@ -607,6 +799,42 @@ async def automode_endpoint(
         # Use session ID from frontend request
         session_id = request.session_id
         user_id = current_user["sub"]  # Google user ID
+        
+        # Update user profile and session metadata
+        upsert_user_profile(
+            user_id=user_id,
+            email=current_user.get("email"),
+            name=current_user.get("name"),
+            picture_url=current_user.get("picture")
+        )
+        
+        # Update session metadata
+        node_count = None
+        edge_count = None
+        if request.graph_state:
+            node_count = len(request.graph_state.nodes)
+            edge_count = len(request.graph_state.edges)
+        
+        upsert_session(
+            user_id=user_id,
+            session_id=session_id,
+            node_count=node_count,
+            edge_count=edge_count
+        )
+        
+        # Track API call event
+        track_user_event(
+            user_id=user_id,
+            event_type="automode",
+            event_category="api_call",
+            session_id=session_id,
+            metadata={
+                "query_length": len(request.query),
+                "nodes_searched": len(request.nodes),
+                "source_type": request.source_type
+            }
+        )
+        
         model = "text-embedding-3-small"
 
         # Track total tokens for all embedding calls
@@ -670,6 +898,14 @@ async def automode_endpoint(
                 user_query=request.query,
                 source_type=request.source_type
             )
+            
+            # Update session stats
+            upsert_session(
+                user_id=user_id,
+                session_id=session_id,
+                node_count=len(request.graph_state.nodes),
+                edge_count=len(request.graph_state.edges)
+            )
 
         return {
             "node_id": best_node_id,
@@ -694,6 +930,39 @@ async def cluster_endpoint(
         # Use session ID from frontend request
         session_id = request.session_id
         user_id = current_user["sub"]  # Google user ID
+        
+        # Update user profile and session metadata
+        upsert_user_profile(
+            user_id=user_id,
+            email=current_user.get("email"),
+            name=current_user.get("name"),
+            picture_url=current_user.get("picture")
+        )
+        
+        # Update session metadata
+        node_count = None
+        edge_count = None
+        if request.graph_state:
+            node_count = len(request.graph_state.nodes)
+            edge_count = len(request.graph_state.edges)
+        
+        upsert_session(
+            user_id=user_id,
+            session_id=session_id,
+            node_count=node_count,
+            edge_count=edge_count
+        )
+        
+        # Track API call event
+        track_user_event(
+            user_id=user_id,
+            event_type="cluster",
+            event_category="api_call",
+            session_id=session_id,
+            metadata={
+                "nodes_clustered": len(request.context)
+            }
+        )
 
         # Track costs for embeddings and completions separately
         embedding_model = "text-embedding-3-small"
@@ -924,6 +1193,26 @@ async def cluster_endpoint(
                 user_query=None,  # Clustering has no user query
                 source_type=None
             )
+            
+            # Update session stats
+            upsert_session(
+                user_id=user_id,
+                session_id=session_id,
+                node_count=len(request.graph_state.nodes),
+                edge_count=len(request.graph_state.edges)
+            )
+            
+            # Track cluster result
+            track_user_event(
+                user_id=user_id,
+                event_type="cluster_complete",
+                event_category="api_call",
+                session_id=session_id,
+                metadata={
+                    "clusters_created": len(result) - 1,  # Exclude cost_info
+                    "nodes_clustered": len(request.context)
+                }
+            )
 
         # Add cost_info to result
         result["cost_info"] = {
@@ -947,6 +1236,15 @@ async def get_cost_endpoint(
     """
     try:
         user_id = current_user["sub"]
+        
+        # Update user profile on any authenticated request
+        upsert_user_profile(
+            user_id=user_id,
+            email=current_user.get("email"),
+            name=current_user.get("name"),
+            picture_url=current_user.get("picture")
+        )
+        
         user_cost_info = get_or_create_user_cost(user_id)
 
         return {
@@ -957,6 +1255,141 @@ async def get_cost_endpoint(
         }
     except Exception as e:
         logger.error(f"Error getting cost info: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# USER EVENT TRACKING ENDPOINT
+# ============================================================================
+
+class UserEventRequest(BaseModel):
+    event_type: str
+    event_category: str
+    session_id: str | None = None
+    metadata: dict | None = None
+
+
+@app.post("/events")
+async def track_event_endpoint(
+    request: UserEventRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Track user interaction event for analytics.
+    """
+    try:
+        user_id = current_user["sub"]
+        
+        # Update user profile
+        upsert_user_profile(
+            user_id=user_id,
+            email=current_user.get("email"),
+            name=current_user.get("name"),
+            picture_url=current_user.get("picture")
+        )
+        
+        # Track event
+        track_user_event(
+            user_id=user_id,
+            event_type=request.event_type,
+            event_category=request.event_category,
+            session_id=request.session_id,
+            metadata=request.metadata
+        )
+        
+        # If session_id provided, update session metadata
+        if request.session_id:
+            upsert_session(
+                user_id=user_id,
+                session_id=request.session_id
+            )
+        
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Error tracking event: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# SESSION MANAGEMENT ENDPOINTS
+# ============================================================================
+
+class SessionUpdateRequest(BaseModel):
+    session_id: str
+    name: str | None = None
+    node_count: int | None = None
+    edge_count: int | None = None
+
+
+@app.post("/sessions")
+async def create_or_update_session(
+    request: SessionUpdateRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Create or update session metadata.
+    """
+    try:
+        user_id = current_user["sub"]
+        
+        # Update user profile
+        upsert_user_profile(
+            user_id=user_id,
+            email=current_user.get("email"),
+            name=current_user.get("name"),
+            picture_url=current_user.get("picture")
+        )
+        
+        # Upsert session
+        upsert_session(
+            user_id=user_id,
+            session_id=request.session_id,
+            name=request.name,
+            node_count=request.node_count,
+            edge_count=request.edge_count
+        )
+        
+        # Track session event
+        track_user_event(
+            user_id=user_id,
+            event_type="session_update",
+            event_category="session",
+            session_id=request.session_id,
+            metadata={
+                "name": request.name,
+                "node_count": request.node_count,
+                "edge_count": request.edge_count
+            }
+        )
+        
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Error updating session: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sessions")
+async def list_sessions(
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    List all sessions for the authenticated user.
+    """
+    try:
+        user_id = current_user["sub"]
+        sb = get_supabase()
+        
+        if not sb:
+            raise HTTPException(status_code=503, detail="Database not available")
+        
+        # Get user sessions
+        response = sb.table('sessions').select('*').eq('user_id', user_id).order('last_accessed_at', desc=True).execute()
+        
+        sessions = response.data if response.data else []
+        
+        return {"sessions": sessions}
+    except Exception as e:
+        logger.error(f"Error listing sessions: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

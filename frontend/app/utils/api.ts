@@ -368,3 +368,103 @@ export async function researchWithAgent(
   });
 }
 
+// ============================================================================
+// ANALYTICS & EVENT TRACKING
+// ============================================================================
+
+export interface UserEvent {
+  event_type: string;
+  event_category: string;
+  session_id?: string;
+  metadata?: Record<string, any>;
+}
+
+/**
+ * Track user interaction event for analytics
+ */
+export async function trackEvent(
+  event: UserEvent,
+  idToken?: string
+): Promise<void> {
+  try {
+    const headers = getAuthHeaders(idToken);
+    await fetch(`${API_BASE_URL}/events`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(event),
+    });
+  } catch (error) {
+    // Silently fail - analytics shouldn't break the app
+    console.debug('Failed to track event:', error);
+  }
+}
+
+// ============================================================================
+// SESSION MANAGEMENT
+// ============================================================================
+
+export interface Session {
+  session_id: string;
+  user_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  last_accessed_at: string;
+  node_count: number;
+  edge_count: number;
+  is_active: boolean;
+}
+
+export interface SessionUpdateRequest {
+  session_id: string;
+  name?: string;
+  node_count?: number;
+  edge_count?: number;
+}
+
+/**
+ * Create or update session metadata
+ */
+export async function updateSession(
+  session: SessionUpdateRequest,
+  idToken?: string
+): Promise<void> {
+  try {
+    const headers = getAuthHeaders(idToken);
+    await fetch(`${API_BASE_URL}/sessions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(session),
+    });
+  } catch (error) {
+    // Silently fail - session sync shouldn't break the app
+    console.debug('Failed to update session:', error);
+  }
+}
+
+/**
+ * List all sessions for the authenticated user
+ */
+export async function listSessions(idToken?: string): Promise<Session[]> {
+  try {
+    const headers = getAuthHeaders(idToken);
+    const response = await fetch(`${API_BASE_URL}/sessions`, {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        throw new Error('Unauthorized - please sign in again');
+      }
+      throw new Error(`Failed to list sessions: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.sessions || [];
+  } catch (error) {
+    console.error('Failed to list sessions:', error);
+    return [];
+  }
+}
+
