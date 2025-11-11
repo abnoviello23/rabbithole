@@ -6,8 +6,6 @@ const nextConfig: NextConfig = {
     // Only check types during build, not during dev (faster)
     ignoreBuildErrors: false,
   },
-  // Optimize build performance
-  swcMinify: true,
   // Reduce build output size
   compress: true,
 };

@@ -1,14 +1,9 @@
-import { DefaultSession } from "next-auth"
+import "next-auth"
 
 declare module "next-auth" {
   interface Session {
     accessToken?: string
     idToken?: string
-    user: {
-      email?: string | null
-      name?: string | null
-      image?: string | null
-    } & DefaultSession["user"]
   }
 }
 
@@ -18,3 +13,4 @@ declare module "next-auth/jwt" {
     idToken?: string
   }
 }
+

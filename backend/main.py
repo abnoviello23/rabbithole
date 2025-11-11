@@ -686,8 +686,11 @@ In short: every answer should read like a compact, high-signal exploration node 
         }
 
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         logger.error(f"Error generating content: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Traceback: {error_trace}")
+        raise HTTPException(status_code=500, detail=f"Generation error: {str(e)}")
 
 
 # DEPRECATED: Agent research feature
@@ -1223,8 +1226,11 @@ async def cluster_endpoint(
         return result
         
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         logger.error(f"Error in cluster endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Traceback: {error_trace}")
+        raise HTTPException(status_code=500, detail=f"Cluster error: {str(e)}")
 
 
 @app.get("/cost")

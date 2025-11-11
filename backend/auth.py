@@ -4,11 +4,26 @@ from google.oauth2 import id_token
 from google.auth.transport import requests
 import os
 from typing import Optional
+from pathlib import Path
+from dotenv import load_dotenv
 
 security = HTTPBearer()
 
-# Google OAuth client ID from environment
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+# Load .env file if not already loaded (handles import order issues)
+env_path = Path(__file__).parent / '.env'
+if env_path.exists():
+    load_dotenv(env_path, override=False)
+
+def get_google_client_id() -> str:
+    """Get Google Client ID, loading from .env if needed"""
+    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    if not client_id:
+        # Try loading .env again in case it wasn't loaded yet
+        env_path = Path(__file__).parent / '.env'
+        if env_path.exists():
+            load_dotenv(env_path, override=True)
+            client_id = os.getenv("GOOGLE_CLIENT_ID")
+    return client_id
 
 def verify_google_token(token: str) -> dict:
     """
@@ -17,10 +32,14 @@ def verify_google_token(token: str) -> dict:
     Requires GOOGLE_CLIENT_ID to be set in environment variables.
     This is used to verify that the token was issued by Google for your application.
     """
-    if not GOOGLE_CLIENT_ID:
+    google_client_id = get_google_client_id()
+    if not google_client_id:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error("GOOGLE_CLIENT_ID not configured on server - check backend/.env file")
         raise HTTPException(
             status_code=500,
-            detail="GOOGLE_CLIENT_ID not configured on server"
+            detail="GOOGLE_CLIENT_ID not configured on server. Please check backend/.env file and restart the server."
         )
     
     try:
@@ -29,7 +48,7 @@ def verify_google_token(token: str) -> dict:
         idinfo = id_token.verify_oauth2_token(
             token,
             requests.Request(),
-            GOOGLE_CLIENT_ID
+            google_client_id
         )
 
         # Token is valid, return user info

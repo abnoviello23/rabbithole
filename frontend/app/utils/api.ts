@@ -135,15 +135,14 @@ export function setAuthErrorHandler(handler: () => void) {
 /**
  * Handle 401 authentication errors by triggering sign out
  */
-function handleAuthError() {
+async function handleAuthError() {
   if (globalAuthErrorHandler) {
     globalAuthErrorHandler();
   } else {
     // Fallback: try to import and call signOut directly (client-side only)
     if (typeof window !== 'undefined') {
-      import('next-auth/react').then(({ signOut }) => {
-        signOut({ callbackUrl: '/' });
-      });
+      const { signOut } = await import('next-auth/react');
+      signOut({ callbackUrl: '/' });
     }
   }
 }
@@ -293,11 +292,28 @@ export async function clusterNodes(
       }),
     }, idToken);
 
+    const responseText = await response.text();
+
     if (!response.ok) {
-      throw new Error(`Cluster request failed: ${response.status} ${response.statusText}`);
+      let detail = responseText;
+
+      try {
+        const parsed = JSON.parse(responseText);
+        if (parsed?.detail) {
+          detail = typeof parsed.detail === 'string' ? parsed.detail : JSON.stringify(parsed.detail);
+        } else if (parsed?.error) {
+          detail = typeof parsed.error === 'string' ? parsed.error : JSON.stringify(parsed.error);
+        }
+      } catch (parseError) {
+        // keep original responseText if JSON parsing fails
+      }
+
+      const message = `Cluster request failed (${response.status} ${response.statusText}): ${detail || 'No additional details'}`;
+      console.error(message);
+      throw new Error(message);
     }
 
-    const data = await response.json();
+    const data = responseText ? JSON.parse(responseText) : {};
 
     // Extract cost_info and return it separately from clusters
     const { cost_info, ...clusters } = data;

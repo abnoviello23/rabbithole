@@ -1,11 +1,21 @@
 import NextAuth from "next-auth"
 import GoogleProvider from "next-auth/providers/google"
 
+// Validate environment variables
+const googleClientId = process.env.GOOGLE_CLIENT_ID
+const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET
+
+if (!googleClientId || !googleClientSecret) {
+  throw new Error(
+    `Missing Google OAuth credentials. GOOGLE_CLIENT_ID: ${googleClientId ? "SET" : "NOT SET"}, GOOGLE_CLIENT_SECRET: ${googleClientSecret ? "SET" : "NOT SET"}. Please check your .env file and restart the dev server.`
+  )
+}
+
 const handler = NextAuth({
   providers: [
     GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID || "",
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+      clientId: googleClientId,
+      clientSecret: googleClientSecret,
     }),
   ],
   callbacks: {
