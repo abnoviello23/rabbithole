@@ -59,13 +59,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="RabbitHole Backend API", version="1.0.0", lifespan=lifespan)
 
 # Configure CORS for authentication
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-allowed_origins = [FRONTEND_URL]
+# Supports multiple origins via comma-separated ALLOWED_ORIGINS env var
+# Format: "https://example.com,https://another.com,http://localhost:3000"
+allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",") if origin.strip()]
 
-# Allow multiple origins if needed (e.g., dev and prod)
-if os.getenv("ADDITIONAL_FRONTEND_URLS"):
-    additional_urls = os.getenv("ADDITIONAL_FRONTEND_URLS", "").split(",")
-    allowed_origins.extend([url.strip() for url in additional_urls if url.strip()])
+# Log allowed origins for debugging
+logger.info(f"🌐 CORS allowed origins: {allowed_origins}")
 
 app.add_middleware(
     CORSMiddleware,

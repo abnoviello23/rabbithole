@@ -12,10 +12,20 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 
 def verify_google_token(token: str) -> dict:
     """
-    Verify Google ID token and return user info
+    Verify Google ID token and return user info.
+    
+    Requires GOOGLE_CLIENT_ID to be set in environment variables.
+    This is used to verify that the token was issued by Google for your application.
     """
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(
+            status_code=500,
+            detail="GOOGLE_CLIENT_ID not configured on server"
+        )
+    
     try:
         # Verify the token with Google
+        # GOOGLE_CLIENT_ID is required to verify the token was issued for your app
         idinfo = id_token.verify_oauth2_token(
             token,
             requests.Request(),

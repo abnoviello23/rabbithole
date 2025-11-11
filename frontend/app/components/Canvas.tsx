@@ -26,9 +26,9 @@ import { ClusterLegend } from './ClusterLegend';
 import SignIn from './SignIn';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
-import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo, GraphState, MinimalNode, MinimalEdge, trackEvent, updateSession } from '../utils/api';
+import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo, GraphState, MinimalNode, MinimalEdge, trackEvent, updateSession, setAuthErrorHandler, AuthError } from '../utils/api';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
-import { useSession } from 'next-auth/react';
+import { useSession, signOut } from 'next-auth/react';
 
 const STORAGE_KEY = 'rabbithole-sessions';
 
@@ -216,6 +216,14 @@ export default function Canvas() {
 
   // Get user ID from session
   const userId = session?.user?.email || 'anonymous';
+
+  // Set up auth error handler to sign out on 401 errors
+  useEffect(() => {
+    setAuthErrorHandler(() => {
+      console.log('Authentication error detected - signing out...');
+      signOut({ callbackUrl: '/' });
+    });
+  }, []);
 
   // Helper function to build path from root to a given node
   const buildPath = useCallback((targetNodeId: string, currentEdges: Edge[]): string[] => {
@@ -448,6 +456,14 @@ export default function Canvas() {
 
       // Subtopics are now displayed inline in the node, no need to create separate nodes
     } catch (error) {
+      // Don't show error for auth errors - user will be redirected to sign-in
+      if (error instanceof AuthError) {
+        console.log('Authentication required - user will be signed out');
+        // Remove loading node since request failed
+        setNodes((ns) => ns.filter((n) => n.id !== nodeId));
+        setEdges((es) => es.filter((e) => e.id !== edgeId));
+        return;
+      }
       console.error('Failed to generate content:', error);
       // Remove loading node on error
       setNodes((ns) => ns.filter((n) => n.id !== nodeId));
@@ -696,6 +712,11 @@ export default function Canvas() {
               }
             })
             .catch((error) => {
+              // Don't show error for auth errors - user will be redirected to sign-in
+              if (error instanceof AuthError) {
+                console.log('Authentication required for clustering - user will be signed out');
+                return;
+              }
               console.error('Clustering failed:', error);
             });
         }
@@ -703,6 +724,13 @@ export default function Canvas() {
         return updatedNodes;
       });
     } catch (error) {
+      // Don't show error for auth errors - user will be redirected to sign-in
+      if (error instanceof AuthError) {
+        console.log('Authentication required for agent research - user will be signed out');
+        // Remove loading node since request failed
+        setNodes((ns) => ns.filter((n) => n.id !== nodeId));
+        return;
+      }
       console.error('Failed to research with agent:', error);
       // Update node with error message
       setNodes((ns) =>
@@ -804,6 +832,11 @@ export default function Canvas() {
       await handleAddNote(autoModeResult.node_id, query);
 
     } catch (error) {
+      // Don't show error for auth errors - user will be redirected to sign-in
+      if (error instanceof AuthError) {
+        console.log('Authentication required for floating chat - user will be signed out');
+        return;
+      }
       console.error('Failed to process floating chat query:', error);
       throw error;
     }
@@ -897,6 +930,10 @@ export default function Canvas() {
             node_count: filteredNodes.length,
             edge_count: filteredEdges.length,
           }, session.idToken).catch(err => {
+            // Don't log auth errors for session sync - user will be redirected
+            if (err instanceof AuthError) {
+              return;
+            }
             console.debug('Failed to sync session to backend:', err);
           });
         }
@@ -970,6 +1007,11 @@ export default function Canvas() {
                   }
                 })
                 .catch((error) => {
+                  // Don't show error for auth errors - user will be redirected to sign-in
+                  if (error instanceof AuthError) {
+                    console.log('Authentication required for clustering - user will be signed out');
+                    return;
+                  }
                   console.error('Clustering failed on session load:', error);
                 });
             }, 100); // Small delay to let UI render first
@@ -1016,6 +1058,10 @@ export default function Canvas() {
         node_count: INITIAL_NODES.length,
         edge_count: INITIAL_EDGES.length,
       }, session.idToken).catch(err => {
+        // Don't log auth errors for session creation - user will be redirected
+        if (err instanceof AuthError) {
+          return;
+        }
         console.debug('Failed to create session in backend:', err);
       });
     }
@@ -1104,6 +1150,11 @@ export default function Canvas() {
           setCostInfo(costData);
         })
         .catch((error) => {
+          // Don't show error for auth errors - user will be redirected to sign-in
+          if (error instanceof AuthError) {
+            console.log('Authentication required - user will be signed out');
+            return;
+          }
           console.error('Failed to fetch cost info on mount:', error);
         });
     }, 200); // Small delay to prioritize UI rendering

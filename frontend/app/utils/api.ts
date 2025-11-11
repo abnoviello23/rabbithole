@@ -55,24 +55,23 @@ export interface GraphState {
 
 export async function getCostInfo(idToken?: string): Promise<CostInfo> {
   try {
-    const headers = getAuthHeaders(idToken);
-    const response = await fetch(`${API_BASE_URL}/cost`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/cost`, {
       method: 'GET',
-      headers,
-    });
+    }, idToken);
 
     if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error('Unauthorized - please sign in again');
-      }
       throw new Error(`Cost info request failed: ${response.status} ${response.statusText}`);
     }
 
     const data = await response.json();
     return data.cost_info;
   } catch (error) {
+    // Re-throw AuthError so it can be handled by the component
+    if (error instanceof AuthError) {
+      throw error;
+    }
     console.error('Failed to get cost info:', error);
-    // Return default values on error
+    // Return default values on error (but not for auth errors)
     return { used: 0, max_total: 10.0 };
   }
 }
@@ -114,6 +113,41 @@ const PLACEHOLDER_IMAGES = [
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+// Custom error class for authentication errors
+export class AuthError extends Error {
+  constructor(message: string = 'Authentication required') {
+    super(message);
+    this.name = 'AuthError';
+  }
+}
+
+// Global handler for auth errors - will be set by the app
+let globalAuthErrorHandler: (() => void) | null = null;
+
+/**
+ * Set the global auth error handler (called from app components)
+ * This will sign out the user when a 401 error occurs
+ */
+export function setAuthErrorHandler(handler: () => void) {
+  globalAuthErrorHandler = handler;
+}
+
+/**
+ * Handle 401 authentication errors by triggering sign out
+ */
+function handleAuthError() {
+  if (globalAuthErrorHandler) {
+    globalAuthErrorHandler();
+  } else {
+    // Fallback: try to import and call signOut directly (client-side only)
+    if (typeof window !== 'undefined') {
+      import('next-auth/react').then(({ signOut }) => {
+        signOut({ callbackUrl: '/' });
+      });
+    }
+  }
+}
+
 // Helper function to get auth headers
 function getAuthHeaders(idToken?: string): HeadersInit {
   const headers: HeadersInit = {
@@ -127,6 +161,32 @@ function getAuthHeaders(idToken?: string): HeadersInit {
   return headers;
 }
 
+/**
+ * Wrapper for fetch that handles 401 errors automatically
+ */
+async function fetchWithAuth(
+  url: string,
+  options: RequestInit = {},
+  idToken?: string
+): Promise<Response> {
+  const headers = getAuthHeaders(idToken);
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...headers,
+      ...options.headers,
+    },
+  });
+
+  // Handle 401 errors by triggering sign out
+  if (response.status === 401) {
+    handleAuthError();
+    throw new AuthError('Unauthorized - please sign in again');
+  }
+
+  return response;
+}
+
 export async function generateContent(
   userQuery: string,
   selectedContext: string | undefined,
@@ -138,10 +198,8 @@ export async function generateContent(
   idToken?: string
 ): Promise<GeneratedContent> {
   try {
-    const headers = getAuthHeaders(idToken);
-    const response = await fetch(`${API_BASE_URL}/generate`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/generate`, {
       method: 'POST',
-      headers,
       body: JSON.stringify({
         user_query: userQuery,
         selected_context: selectedContext,
@@ -151,12 +209,9 @@ export async function generateContent(
         graph_state: graphState,
         source_type: sourceType,
       } as GenerateRequest),
-    });
+    }, idToken);
 
     if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error('Unauthorized - please sign in again');
-      }
       throw new Error(`API request failed: ${response.status} ${response.statusText}`);
     }
 
@@ -191,10 +246,8 @@ export async function autoMode(
   idToken?: string
 ): Promise<AutoModeResult> {
   try {
-    const headers = getAuthHeaders(idToken);
-    const response = await fetch(`${API_BASE_URL}/automode`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/automode`, {
       method: 'POST',
-      headers,
       body: JSON.stringify({
         query,
         nodes,
@@ -202,12 +255,9 @@ export async function autoMode(
         graph_state: graphState,
         source_type: sourceType,
       }),
-    });
+    }, idToken);
 
     if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error('Unauthorized - please sign in again');
-      }
       throw new Error(`Auto mode request failed: ${response.status} ${response.statusText}`);
     }
 
@@ -234,21 +284,16 @@ export async function clusterNodes(
   idToken?: string
 ): Promise<{ clusters: ClusterResult; costInfo?: CostInfo }> {
   try {
-    const headers = getAuthHeaders(idToken);
-    const response = await fetch(`${API_BASE_URL}/cluster`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/cluster`, {
       method: 'POST',
-      headers,
       body: JSON.stringify({
         context: nodes,
         session_id: sessionId,
         graph_state: graphState,
       }),
-    });
+    }, idToken);
 
     if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error('Unauthorized - please sign in again');
-      }
       throw new Error(`Cluster request failed: ${response.status} ${response.statusText}`);
     }
 
@@ -387,15 +432,19 @@ export async function trackEvent(
   idToken?: string
 ): Promise<void> {
   try {
-    const headers = getAuthHeaders(idToken);
-    await fetch(`${API_BASE_URL}/events`, {
+    await fetchWithAuth(`${API_BASE_URL}/events`, {
       method: 'POST',
-      headers,
       body: JSON.stringify(event),
-    });
+    }, idToken);
   } catch (error) {
-    // Silently fail - analytics shouldn't break the app
-    console.debug('Failed to track event:', error);
+    // Re-throw AuthError so it can be handled (but typically we'll just ignore analytics errors)
+    if (error instanceof AuthError) {
+      // Don't throw - analytics failures shouldn't break the app
+      console.debug('Auth error tracking event (user may need to sign in):', error);
+    } else {
+      // Silently fail for other errors - analytics shouldn't break the app
+      console.debug('Failed to track event:', error);
+    }
   }
 }
 
@@ -430,14 +479,16 @@ export async function updateSession(
   idToken?: string
 ): Promise<void> {
   try {
-    const headers = getAuthHeaders(idToken);
-    await fetch(`${API_BASE_URL}/sessions`, {
+    await fetchWithAuth(`${API_BASE_URL}/sessions`, {
       method: 'POST',
-      headers,
       body: JSON.stringify(session),
-    });
+    }, idToken);
   } catch (error) {
-    // Silently fail - session sync shouldn't break the app
+    // Re-throw AuthError so it can be handled
+    if (error instanceof AuthError) {
+      throw error;
+    }
+    // Silently fail for other errors - session sync shouldn't break the app
     console.debug('Failed to update session:', error);
   }
 }
@@ -447,22 +498,21 @@ export async function updateSession(
  */
 export async function listSessions(idToken?: string): Promise<Session[]> {
   try {
-    const headers = getAuthHeaders(idToken);
-    const response = await fetch(`${API_BASE_URL}/sessions`, {
+    const response = await fetchWithAuth(`${API_BASE_URL}/sessions`, {
       method: 'GET',
-      headers,
-    });
+    }, idToken);
 
     if (!response.ok) {
-      if (response.status === 401) {
-        throw new Error('Unauthorized - please sign in again');
-      }
       throw new Error(`Failed to list sessions: ${response.status}`);
     }
 
     const data = await response.json();
     return data.sessions || [];
   } catch (error) {
+    // Re-throw AuthError so it can be handled
+    if (error instanceof AuthError) {
+      throw error;
+    }
     console.error('Failed to list sessions:', error);
     return [];
   }
