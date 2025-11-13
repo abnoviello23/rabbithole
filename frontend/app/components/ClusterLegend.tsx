@@ -63,8 +63,9 @@ export function ClusterLegend({ clusterData, onClose }: ClusterLegendProps) {
         `
       }} />
       <div 
-        className="cluster-legend-scroll flex flex-col gap-2 max-h-[400px] overflow-y-auto pr-2"
+        className="cluster-legend-scroll flex flex-col gap-2 overflow-y-auto pr-2"
         style={{
+          maxHeight: '33vh',
           scrollbarWidth: 'thin',
           scrollbarColor: 'rgba(255, 255, 255, 0.2) rgba(255, 255, 255, 0.05)',
         }}

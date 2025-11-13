@@ -36,7 +36,7 @@ export function SessionManager({
   }, [isOpen]);
 
   return (
-    <div className="fixed top-4 left-4 z-50" ref={dropdownRef}>
+    <div className="fixed top-4 left-4 z-60" ref={dropdownRef}>
       {/* Current session button */}
       <button
         onClick={() => setIsOpen(!isOpen)}

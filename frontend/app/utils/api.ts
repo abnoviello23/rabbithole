@@ -72,7 +72,7 @@ export async function getCostInfo(idToken?: string): Promise<CostInfo> {
     }
     console.error('Failed to get cost info:', error);
     // Return default values on error (but not for auth errors)
-    return { used: 0, max_total: 10.0 };
+    return { used: 0, max_total: 5.0 };
   }
 }
 

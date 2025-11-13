@@ -25,12 +25,12 @@ export function CostDisplay({ used, maxTotal }: CostDisplayProps) {
   return (
     <div
       className={`px-3 py-2 backdrop-blur-sm border rounded-lg ${getBgColor()} transition-colors`}
-      title={`Cost: $${used.toFixed(4)} / $${maxTotal.toFixed(2)}`}
+      title={`Cost: $${used.toFixed(2)} / $${maxTotal.toFixed(2)}`}
     >
       <div className="flex items-center gap-2">
         <span className="text-xs text-neutral-400">Cost:</span>
         <span className={`text-sm font-mono font-medium ${getColor()}`}>
-          ${used.toFixed(4)} / ${maxTotal.toFixed(2)}
+          ${used.toFixed(2)} / ${maxTotal.toFixed(2)}
         </span>
       </div>
     </div>
