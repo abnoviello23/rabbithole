@@ -215,7 +215,7 @@ export default function Canvas() {
   const [shouldFitView, setShouldFitView] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [userSettings, setUserSettings] = useState<UserSettings>({
-    length: 'detailed',
+    length: 'short',
     autoTopics: 3,
     customPrompt: '',
   });
