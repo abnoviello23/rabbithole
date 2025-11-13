@@ -10,7 +10,7 @@ export interface UserSettings {
 }
 
 const DEFAULT_SETTINGS: UserSettings = {
-  length: 'detailed',
+  length: 'short',
   autoTopics: 3,
   customPrompt: '',
 };
@@ -35,9 +35,14 @@ export function SettingsPanel({ onSettingsChange, iconOnly = false }: SettingsPa
         const parsed = JSON.parse(stored) as UserSettings;
         setSettings(parsed);
         onSettingsChange(parsed);
+      } else {
+        // No stored settings, use defaults and notify parent
+        onSettingsChange(DEFAULT_SETTINGS);
       }
     } catch (error) {
       console.error('Failed to load settings:', error);
+      // On error, use defaults and notify parent
+      onSettingsChange(DEFAULT_SETTINGS);
     }
   }, [onSettingsChange]);
 

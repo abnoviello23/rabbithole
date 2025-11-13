@@ -160,7 +160,7 @@ class Node(BaseModel):
 
 
 class UserSettings(BaseModel):
-    length: str = "detailed"  # "short" or "detailed"
+    length: str = "short"  # "short" or "detailed"
     autoTopics: int = 3  # 3, 5, or 7
     customPrompt: str = ""
 
