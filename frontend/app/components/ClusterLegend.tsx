@@ -14,9 +14,19 @@ export function ClusterLegend({ clusterData, onClose }: ClusterLegendProps) {
     return null;
   }
 
-  const clusters = Object.entries(clusterData);
-  const totalNodes = clusters.reduce((sum, [, nodeIds]) => sum + nodeIds.length, 0);
-  
+  // Filter out non-cluster fields (cost_info, error)
+  const clusters = Object.entries(clusterData).filter(
+    ([key]) => key !== 'cost_info' && key !== 'error'
+  );
+
+  if (clusters.length === 0) {
+    return null;
+  }
+
+  const totalNodes = clusters.reduce((sum, [, nodeIds]) => {
+    return sum + (Array.isArray(nodeIds) ? nodeIds.length : 0);
+  }, 0);
+
   // Use the same color assignment logic as Canvas for consistency
   const clusterTitles = clusters.map(([title]) => title);
   const clusterColorMap = assignClusterColors(clusterTitles);
@@ -72,6 +82,7 @@ export function ClusterLegend({ clusterData, onClose }: ClusterLegendProps) {
       >
         {clusters.map(([clusterTitle, nodeIds]) => {
           const color = clusterColorMap[clusterTitle];
+          const nodeCount = Array.isArray(nodeIds) ? nodeIds.length : 0;
           return (
             <div
               key={clusterTitle}
@@ -89,7 +100,7 @@ export function ClusterLegend({ clusterData, onClose }: ClusterLegendProps) {
                   {clusterTitle}
                 </div>
                 <div className="text-xs text-white/50 mt-0.5">
-                  {nodeIds.length} {nodeIds.length === 1 ? 'node' : 'nodes'}
+                  {nodeCount} {nodeCount === 1 ? 'node' : 'nodes'}
                 </div>
               </div>
             </div>

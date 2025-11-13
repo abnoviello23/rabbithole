@@ -656,6 +656,20 @@ async def generate_endpoint(
             }
         )
 
+        # Check if user has exceeded their cost limit
+        user_cost_info = get_or_create_user_cost(user_id)
+        if user_cost_info["current_cost"] >= user_cost_info["max_cost"]:
+            return {
+                "title": "",
+                "response": f"Error: Cost limit exceeded. Your current usage (${user_cost_info['current_cost']:.2f}) has reached or exceeded your maximum allowed cost (${user_cost_info['max_cost']:.2f}). Contact us directly to increase your limit.",
+                "suggested_questions": [],
+                "subtopics": [],
+                "cost_info": {
+                    "used": user_cost_info["current_cost"],
+                    "max_total": user_cost_info["max_cost"]
+                }
+            }
+
         # Get settings from request or use defaults
         settings = request.settings or UserSettings()
 
@@ -936,7 +950,20 @@ async def automode_endpoint(
                 "source_type": request.source_type
             }
         )
-        
+
+        # Check if user has exceeded their cost limit
+        user_cost_info = get_or_create_user_cost(user_id)
+        if user_cost_info["current_cost"] >= user_cost_info["max_cost"]:
+            return {
+                "node_id": None,
+                "similarity": 0.0,
+                "cost_info": {
+                    "used": user_cost_info["current_cost"],
+                    "max_total": user_cost_info["max_cost"]
+                },
+                "error": f"Cost limit exceeded. Your current usage (${user_cost_info['current_cost']:.2f}) has reached or exceeded your maximum allowed cost (${user_cost_info['max_cost']:.2f})."
+            }
+
         model = "text-embedding-3-small"
 
         # Track total tokens for all embedding calls
@@ -1065,6 +1092,17 @@ async def cluster_endpoint(
                 "nodes_clustered": len(request.context)
             }
         )
+
+        # Check if user has exceeded their cost limit
+        user_cost_info = get_or_create_user_cost(user_id)
+        if user_cost_info["current_cost"] >= user_cost_info["max_cost"]:
+            return {
+                "cost_info": {
+                    "used": user_cost_info["current_cost"],
+                    "max_total": user_cost_info["max_cost"]
+                },
+                "error": f"Cost limit exceeded. Your current usage (${user_cost_info['current_cost']:.2f}) has reached or exceeded your maximum allowed cost (${user_cost_info['max_cost']:.2f})."
+            }
 
         # Track costs for embeddings and completions separately
         embedding_model = "text-embedding-3-small"

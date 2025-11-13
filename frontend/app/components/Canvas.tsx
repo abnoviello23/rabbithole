@@ -1177,19 +1177,30 @@ export default function Canvas() {
       return;
     }
 
+    // Filter out non-cluster fields (cost_info, error)
+    const clusterEntries = Object.entries(clusterData).filter(
+      ([key]) => key !== 'cost_info' && key !== 'error'
+    );
+
+    if (clusterEntries.length === 0) {
+      return;
+    }
+
     // Get cluster titles in a consistent order
-    const clusterTitles = Object.keys(clusterData);
-    
+    const clusterTitles = clusterEntries.map(([title]) => title);
+
     // Assign colors maximizing contrast between clusters
     const clusterColorMap = assignClusterColors(clusterTitles);
 
     // Build a map of nodeId -> clusterColor
     const nodeToClusterColor = new Map<string, string>();
-    Object.entries(clusterData).forEach(([clusterTitle, nodeIds]) => {
+    clusterEntries.forEach(([clusterTitle, nodeIds]) => {
       const clusterColor = clusterColorMap[clusterTitle];
-      nodeIds.forEach(nodeId => {
-        nodeToClusterColor.set(nodeId, clusterColor);
-      });
+      if (Array.isArray(nodeIds)) {
+        nodeIds.forEach(nodeId => {
+          nodeToClusterColor.set(nodeId, clusterColor);
+        });
+      }
     });
 
     // Update nodes with cluster colors (only for non-root, non-subtopic nodes)
