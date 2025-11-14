@@ -487,6 +487,9 @@ export interface Session {
   node_count: number;
   edge_count: number;
   is_active: boolean;
+  share_token?: string | null;
+  is_shared?: boolean;
+  shared_at?: string | null;
 }
 
 export interface SessionUpdateRequest {
@@ -540,6 +543,107 @@ export async function listSessions(idToken?: string): Promise<Session[]> {
     }
     console.error('Failed to list sessions:', error);
     return [];
+  }
+}
+
+// ============================================================================
+// SESSION SHARING
+// ============================================================================
+
+export interface ShareSessionResponse {
+  status: string;
+  share_token: string;
+  share_url: string;
+}
+
+/**
+ * Enable public sharing for a session
+ */
+export async function enableSessionSharing(
+  sessionId: string,
+  idToken?: string
+): Promise<ShareSessionResponse> {
+  try {
+    const response = await fetchWithAuth(`${API_BASE_URL}/sessions/${sessionId}/share`, {
+      method: 'POST',
+    }, idToken);
+
+    if (!response.ok) {
+      throw new Error(`Failed to enable sharing: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    // Re-throw AuthError so it can be handled
+    if (error instanceof AuthError) {
+      throw error;
+    }
+    console.error('Failed to enable sharing:', error);
+    throw error;
+  }
+}
+
+/**
+ * Disable public sharing for a session
+ */
+export async function disableSessionSharing(
+  sessionId: string,
+  idToken?: string
+): Promise<void> {
+  try {
+    const response = await fetchWithAuth(`${API_BASE_URL}/sessions/${sessionId}/share`, {
+      method: 'DELETE',
+    }, idToken);
+
+    if (!response.ok) {
+      throw new Error(`Failed to disable sharing: ${response.status}`);
+    }
+  } catch (error) {
+    // Re-throw AuthError so it can be handled
+    if (error instanceof AuthError) {
+      throw error;
+    }
+    console.error('Failed to disable sharing:', error);
+    throw error;
+  }
+}
+
+export interface SharedSessionData {
+  session: {
+    session_id: string;
+    name: string;
+    created_at: string;
+    user_id: string;
+  };
+  graph_state: {
+    sessionId: string;
+    nodes: MinimalNode[];
+    edges: MinimalEdge[];
+  };
+}
+
+/**
+ * Get a shared session by share token (public, no auth required)
+ */
+export async function getSharedSession(shareToken: string): Promise<SharedSessionData> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/sessions/shared/${shareToken}`, {
+      method: 'GET',
+    });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error('Shared session not found');
+      }
+      throw new Error(`Failed to get shared session: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Failed to get shared session:', error);
+    throw error;
   }
 }
 

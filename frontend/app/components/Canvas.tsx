@@ -26,10 +26,12 @@ import { ClusterLegend } from './ClusterLegend';
 import SignIn from './SignIn';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
-import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo, GraphState, MinimalNode, MinimalEdge, trackEvent, updateSession, setAuthErrorHandler, AuthError, UserSettings } from '../utils/api';
+import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo, GraphState, MinimalNode, MinimalEdge, trackEvent, updateSession, listSessions, setAuthErrorHandler, AuthError, UserSettings } from '../utils/api';
 import { SettingsPanel } from './SettingsPanel';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 import { useSession, signOut } from 'next-auth/react';
+import ShareDialog from './ShareDialog';
+import { Share2 } from 'lucide-react';
 
 const STORAGE_KEY = 'rabbithole-sessions';
 
@@ -214,6 +216,8 @@ export default function Canvas() {
   const [costInfo, setCostInfo] = useState<CostInfo>({ used: 0, max_total: 5.0 });
   const [shouldFitView, setShouldFitView] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
+  const [shareToken, setShareToken] = useState<string | null>(null);
   const [userSettings, setUserSettings] = useState<UserSettings>({
     length: 'short',
     autoTopics: 3,
@@ -1170,6 +1174,33 @@ export default function Canvas() {
     return () => clearTimeout(timeoutId);
   }, [session]);
 
+  // Load share token for current session from backend
+  useEffect(() => {
+    if (!session?.idToken || !currentSessionId) {
+      setShareToken(null);
+      return;
+    }
+    
+    // Use listSessions from api.ts (already imported at top)
+    listSessions(session.idToken)
+      .then((sessions) => {
+        const currentSession = sessions.find((s) => s.session_id === currentSessionId);
+        if (currentSession?.share_token) {
+          setShareToken(currentSession.share_token);
+        } else {
+          setShareToken(null);
+        }
+      })
+      .catch((error) => {
+        // Silently fail - share token loading shouldn't break the app
+        if (error instanceof AuthError) {
+          return;
+        }
+        console.debug('Failed to load share token:', error);
+        setShareToken(null);
+      });
+  }, [session?.idToken, currentSessionId]);
+
 
   // Apply cluster colors to nodes when clusterData changes
   useEffect(() => {
@@ -1308,8 +1339,32 @@ export default function Canvas() {
           <SettingsPanel onSettingsChange={setUserSettings} iconOnly={true} />
         </div>
 
+        {/* Share Button */}
+        {session?.user && (
+          <button
+            onClick={() => setIsShareDialogOpen(true)}
+            className="absolute top-4 right-[180px] z-50 px-3 py-2 backdrop-blur-sm border rounded-lg bg-neutral-800/80 hover:bg-neutral-700/80 border-white/20 text-white hover:border-blue-500/50 transition-colors flex items-center gap-2"
+            title="Share session"
+          >
+            <Share2 className="w-4 h-4" />
+            <span className="text-sm font-medium">Share</span>
+          </button>
+        )}
+
         {/* User Info with Cost Display */}
         <SignIn costInfo={costInfo} />
+
+        {/* Share Dialog */}
+        {session?.user && (
+          <ShareDialog
+            sessionId={currentSessionId}
+            isOpen={isShareDialogOpen}
+            onClose={() => setIsShareDialogOpen(false)}
+            idToken={session?.idToken}
+            existingShareToken={shareToken}
+            onShareTokenChange={setShareToken}
+          />
+        )}
 
         {/* Chat panel toggle button */}
         <button
