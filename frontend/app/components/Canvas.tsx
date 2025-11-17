@@ -31,7 +31,6 @@ import { SettingsPanel } from './SettingsPanel';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 import { useSession, signOut } from 'next-auth/react';
 import ShareDialog from './ShareDialog';
-import { Share2 } from 'lucide-react';
 
 const STORAGE_KEY = 'rabbithole-sessions';
 
@@ -1339,20 +1338,11 @@ export default function Canvas() {
           <SettingsPanel onSettingsChange={setUserSettings} iconOnly={true} />
         </div>
 
-        {/* Share Button */}
-        {session?.user && (
-          <button
-            onClick={() => setIsShareDialogOpen(true)}
-            className="absolute top-4 right-[180px] z-50 px-3 py-2 backdrop-blur-sm border rounded-lg bg-neutral-800/80 hover:bg-neutral-700/80 border-white/20 text-white hover:border-blue-500/50 transition-colors flex items-center gap-2"
-            title="Share session"
-          >
-            <Share2 className="w-4 h-4" />
-            <span className="text-sm font-medium">Share</span>
-          </button>
-        )}
-
-        {/* User Info with Cost Display */}
-        <SignIn costInfo={costInfo} />
+        {/* User Info with Cost Display and Share Button */}
+        <SignIn 
+          costInfo={costInfo} 
+          onShareClick={session?.user ? () => setIsShareDialogOpen(true) : undefined}
+        />
 
         {/* Share Dialog */}
         {session?.user && (

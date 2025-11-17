@@ -149,9 +149,9 @@ function compactVerticalSpacing(nodes: Node[], edges: Edge[]): Node[] {
     return node;
   });
 }
-
 // Default export to satisfy Next.js type checking
 // (Next.js expects layout.ts files to have a default export)
 export default function Layout() {
   return null;
 }
+
