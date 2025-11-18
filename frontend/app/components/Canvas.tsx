@@ -24,9 +24,10 @@ import { ChatPanel, ChatMessage } from './ChatPanel';
 import { FloatingChat } from './FloatingChat';
 import { ClusterLegend } from './ClusterLegend';
 import SignIn from './SignIn';
-import { FileText } from 'lucide-react';
+import { FileText, Copy } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
 import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo, GraphState, MinimalNode, MinimalEdge, trackEvent, updateSession, listSessions, getSession, setAuthErrorHandler, AuthError, UserSettings } from '../utils/api';
+import { exportSessionToClipboard } from '../utils/sessionExport';
 import { SettingsPanel } from './SettingsPanel';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 import { useSession, signOut } from 'next-auth/react';
@@ -328,6 +329,7 @@ export default function Canvas() {
   const [isInitialized, setIsInitialized] = useState(false);
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   const [shareToken, setShareToken] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
   const [userSettings, setUserSettings] = useState<UserSettings>({
     length: 'short',
     autoTopics: 3,
@@ -1713,10 +1715,12 @@ export default function Canvas() {
         </div>
 
         {/* User Info with Cost Display and Share Button */}
-        <SignIn 
-          costInfo={costInfo} 
-          onShareClick={session?.user ? () => setIsShareDialogOpen(true) : undefined}
-        />
+        <div className="absolute top-4 right-4 z-50 flex items-center gap-3">
+          <SignIn 
+            costInfo={costInfo} 
+            onShareClick={session?.user ? () => setIsShareDialogOpen(true) : undefined}
+          />
+        </div>
 
         {/* Share Dialog */}
         {session?.user && (
@@ -1759,17 +1763,46 @@ export default function Canvas() {
           />
         )}
 
-        {/* Show legend button when hidden */}
-        {!isLegendVisible && clusterData && Object.keys(clusterData).length > 0 && (
-          <button
-            onClick={() => setIsLegendVisible(true)}
-            className="absolute bottom-4 left-4 z-50 flex items-center gap-2 px-3 py-2 bg-black/60 backdrop-blur-sm border border-white/20 rounded-lg text-white hover:bg-black/70 transition-colors text-sm"
-            title="Show cluster legend"
-          >
-            <span className="w-2 h-2 rounded-full bg-blue-400"></span>
-            Clusters
-          </button>
-        )}
+        {/* Bottom Left Buttons */}
+        <div className="absolute bottom-4 left-4 z-50 flex items-center gap-2">
+          {/* Copy Session Summary Button */}
+          {nodes.length > 0 && (
+            <button
+              onClick={async () => {
+                setIsExporting(true);
+                try {
+                  await exportSessionToClipboard(nodes, edges, currentSessionName);
+                  alert('Session summary copied to clipboard!');
+                } catch (error) {
+                  console.error('Failed to export session:', error);
+                  alert('Failed to copy to clipboard. Please try again.');
+                } finally {
+                  setIsExporting(false);
+                }
+              }}
+              disabled={isExporting}
+              className="px-3 py-2 backdrop-blur-sm border rounded-lg bg-black/60 hover:bg-black/70 border-white/20 text-white transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+              title="Copy session summary to clipboard"
+            >
+              <Copy className="w-4 h-4" />
+              <span className="text-sm font-medium">
+                {isExporting ? 'Copying...' : 'Copy Session Summary'}
+              </span>
+            </button>
+          )}
+
+          {/* Show legend button when hidden */}
+          {!isLegendVisible && clusterData && Object.keys(clusterData).length > 0 && (
+            <button
+              onClick={() => setIsLegendVisible(true)}
+              className="flex items-center gap-2 px-3 py-2 bg-black/60 backdrop-blur-sm border border-white/20 rounded-lg text-white hover:bg-black/70 transition-colors text-sm"
+              title="Show cluster legend"
+            >
+              <span className="w-2 h-2 rounded-full bg-blue-400"></span>
+              Clusters
+            </button>
+          )}
+        </div>
 
         <div style={{ width: '100%', height: '100%' }}>
           <CanvasContext.Provider value={contextValue}>

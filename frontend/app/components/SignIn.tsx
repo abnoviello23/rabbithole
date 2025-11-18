@@ -17,17 +17,15 @@ export default function SignIn({ costInfo, onShareClick }: SignInProps) {
 
   if (status === 'loading') {
     return (
-      <div className="absolute top-4 right-4 z-50">
-        <div className="px-4 py-2 rounded-lg bg-neutral-800 border border-white/10 text-neutral-300 text-sm">
-          Loading...
-        </div>
+      <div className="px-4 py-2 rounded-lg bg-neutral-800 border border-white/10 text-neutral-300 text-sm">
+        Loading...
       </div>
     );
   }
 
   if (session && session.user) {
     return (
-      <div className="absolute top-4 right-4 z-50 flex items-center gap-3">
+      <div className="flex items-center gap-3">
         {/* Share Button */}
         {onShareClick && (
           <button
@@ -70,11 +68,10 @@ export default function SignIn({ costInfo, onShareClick }: SignInProps) {
   }
 
   return (
-    <div className="absolute top-4 right-4 z-50">
-      <button
-        onClick={() => signIn('google')}
-        className="flex items-center gap-2 px-6 py-3 rounded-lg bg-white hover:bg-gray-50 border border-gray-300 text-gray-700 font-medium transition-colors shadow-lg"
-      >
+    <button
+      onClick={() => signIn('google')}
+      className="flex items-center gap-2 px-6 py-3 rounded-lg bg-white hover:bg-gray-50 border border-gray-300 text-gray-700 font-medium transition-colors shadow-lg"
+    >
         <svg className="w-5 h-5" viewBox="0 0 24 24">
           <path
             fill="#4285F4"
@@ -95,6 +92,5 @@ export default function SignIn({ costInfo, onShareClick }: SignInProps) {
         </svg>
         Sign in with Google
       </button>
-    </div>
   );
 }
