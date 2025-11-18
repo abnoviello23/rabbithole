@@ -45,7 +45,7 @@ export function CustomEdge({
 
   // Truncate long labels to prevent UI crossovers
   // Full text is always available in the ChatPanel
-  const MAX_LABEL_LENGTH = 60;
+  const MAX_LABEL_LENGTH = 100;
   const labelText = typeof label === 'string' ? label : String(label || '');
   const truncatedLabel = labelText.length > MAX_LABEL_LENGTH 
     ? labelText.slice(0, MAX_LABEL_LENGTH) + '...'

@@ -13,10 +13,11 @@ import ReactFlow, {
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { CardNode, CardNodeData, assignClusterColors } from './CardNode';
 import { CustomEdge } from './CustomEdge';
 import { ClusterLegend } from './ClusterLegend';
+import { ChatPanel, ChatMessage } from './ChatPanel';
 import { layoutNodes } from '../utils/layout';
 import { getSharedSession, MinimalNode, MinimalEdge } from '../utils/api';
 import { Eye } from 'lucide-react';
@@ -65,15 +66,6 @@ interface SharedCanvasProps {
   shareToken: string;
 }
 
-// Define node and edge types OUTSIDE the component
-const nodeTypes = {
-  card: CardNode,
-};
-
-const edgeTypes = {
-  custom: CustomEdge,
-};
-
 function SharedCanvasInner({ shareToken }: SharedCanvasProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -82,6 +74,8 @@ function SharedCanvasInner({ shareToken }: SharedCanvasProps) {
   const [sessionName, setSessionName] = useState<string>('');
   const [clusterData, setClusterData] = useState<any>(null);
   const [isLegendVisible, setIsLegendVisible] = useState(true);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [isChatPanelOpen, setIsChatPanelOpen] = useState(false);
 
   // Load shared session
   useEffect(() => {
@@ -158,6 +152,97 @@ function SharedCanvasInner({ shareToken }: SharedCanvasProps) {
     });
   }, [clusterData, setNodes]);
 
+  // Helper function to build path from root to a given node
+  const buildPath = useCallback((targetNodeId: string, currentEdges: Edge[]): string[] => {
+    const path: string[] = [];
+    let currentId = targetNodeId;
+
+    // Traverse backwards from target to root
+    while (currentId) {
+      path.unshift(currentId);
+      const parentEdge = currentEdges.find((e) => e.target === currentId);
+      if (!parentEdge) break;
+      currentId = parentEdge.source;
+    }
+
+    return path;
+  }, []);
+
+  // Helper function to build lineage for chat view
+  const buildLineage = useCallback((targetNodeId: string | null): ChatMessage[] => {
+    if (!targetNodeId) return [];
+
+    const pathIds = buildPath(targetNodeId, edges);
+    const lineage: ChatMessage[] = [];
+
+    pathIds.forEach((nodeId) => {
+      const node = nodes.find((n) => n.id === nodeId);
+      if (!node || !node.data) return;
+
+      // Skip root node
+      if (node.data.isRoot) return;
+
+      // Find the edge that led to this node (to get the query and context)
+      const incomingEdge = edges.find((e) => e.target === nodeId);
+      const edgeData = incomingEdge?.data as any;
+      const userQuery = edgeData?.userQuery || (incomingEdge?.label as string);
+      const selectedContext = edgeData?.selectedContext;
+      const color = edgeData?.color;
+
+      lineage.push({
+        nodeId,
+        title: node.data.title,
+        body: node.data.body,
+        userQuery,
+        selectedContext,
+        color,
+        isRoot: node.data.isRoot,
+      });
+    });
+
+    return lineage;
+  }, [nodes, edges, buildPath]);
+
+  // Calculate active path node IDs
+  const activePathNodeIds = useMemo(() => {
+    if (!selectedNodeId) return new Set<string>();
+    const pathIds = buildPath(selectedNodeId, edges);
+    return new Set(pathIds);
+  }, [selectedNodeId, edges, buildPath]);
+
+  // Handle node click (for selection)
+  const handleNodeClick = useCallback((nodeId: string) => {
+    setSelectedNodeId(nodeId);
+    setIsChatPanelOpen(true);
+  }, []);
+
+  // Create node and edge types with access to component state
+  // Using useMemo to create wrapper components that have access to the current state
+  const nodeTypes = useMemo(() => {
+    const CardNodeWrapper = (props: any) => (
+      <CardNode
+        {...props}
+        onNodeClick={handleNodeClick}
+        isInActivePath={activePathNodeIds.has(props.id)}
+        isSelected={props.id === selectedNodeId}
+        isChatPanelOpen={isChatPanelOpen}
+        edges={edges}
+      />
+    );
+    return { card: CardNodeWrapper };
+  }, [handleNodeClick, activePathNodeIds, selectedNodeId, isChatPanelOpen, edges]);
+
+  const edgeTypes = useMemo(() => {
+    const CustomEdgeWrapper = (props: any) => (
+      <CustomEdge
+        {...props}
+        isInActivePath={activePathNodeIds.has(props.source) && activePathNodeIds.has(props.target)}
+        isChatPanelOpen={isChatPanelOpen}
+      />
+    );
+    return { custom: CustomEdgeWrapper };
+  }, [activePathNodeIds, isChatPanelOpen]);
+
   // Re-layout whenever node dimensions change (debounced for performance)
   // This matches the logic in Canvas.tsx to ensure consistent layout behavior
   useEffect(() => {
@@ -211,71 +296,88 @@ function SharedCanvasInner({ shareToken }: SharedCanvasProps) {
   }
 
   return (
-    <div style={{ height: '100vh', width: '100vw', background: '#0a0a0a' }}>
-      {/* Header */}
-      <div className="absolute top-4 left-4 right-4 z-50 flex items-center justify-between">
-        <div className="px-4 py-2 backdrop-blur-sm border rounded-lg bg-neutral-800/80 border-white/20 text-white">
-          <div className="flex items-center gap-2">
-            <Eye className="w-4 h-4 text-blue-400" />
-            <span className="text-sm font-medium">Read Only</span>
+    <div style={{ height: '100vh', width: '100vw', background: '#0a0a0a', display: 'flex' }}>
+      {/* Canvas area */}
+      <div
+        style={{
+          width: isChatPanelOpen ? '66.666%' : '100%',
+          height: '100vh',
+          transition: 'width 300ms ease-in-out',
+          position: 'relative',
+        }}
+      >
+        {/* Header */}
+        <div className="absolute top-4 left-4 right-4 z-50 flex items-center justify-between">
+          <div className="px-4 py-2 backdrop-blur-sm border rounded-lg bg-neutral-800/80 border-white/20 text-white">
+            <div className="flex items-center gap-2">
+              <Eye className="w-4 h-4 text-blue-400" />
+              <span className="text-sm font-medium">Read Only</span>
+            </div>
+          </div>
+          <div className="px-4 py-2 backdrop-blur-sm border rounded-lg bg-neutral-800/80 border-white/20 text-white">
+            <span className="text-sm font-medium">{sessionName}</span>
           </div>
         </div>
-        <div className="px-4 py-2 backdrop-blur-sm border rounded-lg bg-neutral-800/80 border-white/20 text-white">
-          <span className="text-sm font-medium">{sessionName}</span>
+
+        {/* Cluster Legend */}
+        {isLegendVisible && clusterData && (
+          <ClusterLegend
+            clusterData={clusterData}
+            onClose={() => setIsLegendVisible(false)}
+          />
+        )}
+
+        {/* Show legend button when hidden */}
+        {!isLegendVisible && clusterData && Object.keys(clusterData).length > 0 && (
+          <button
+            onClick={() => setIsLegendVisible(true)}
+            className="absolute bottom-4 left-4 z-50 flex items-center gap-2 px-3 py-2 bg-black/60 backdrop-blur-sm border border-white/20 rounded-lg text-white hover:bg-black/70 transition-colors text-sm"
+            title="Show cluster legend"
+          >
+            <span className="w-2 h-2 rounded-full bg-blue-400"></span>
+            Clusters
+          </button>
+        )}
+
+        {/* Canvas */}
+        <div style={{ width: '100%', height: '100%' }}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            fitView
+            fitViewOptions={{ padding: 2.25 }}
+            minZoom={0.1}
+            maxZoom={4}
+            nodesDraggable={false}
+            elementsSelectable={true}
+            panOnScroll={true}
+            zoomOnScroll={false}
+            zoomOnPinch={true}
+            panOnScrollMode={PanOnScrollMode.Free}
+            panOnScrollSpeed={1}
+            defaultEdgeOptions={{
+              type: 'custom',
+              style: { stroke: '#9CA3AF', strokeWidth: 2 },
+              markerEnd: { type: MarkerType.ArrowClosed, color: '#9CA3AF' },
+            }}
+            edgesUpdatable={false}
+            edgesFocusable={true}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+          >
+            <Background variant={BackgroundVariant.Dots} gap={32} size={1} color="#2a2a2a" />
+          </ReactFlow>
         </div>
       </div>
 
-      {/* Cluster Legend */}
-      {isLegendVisible && clusterData && (
-        <ClusterLegend
-          clusterData={clusterData}
-          onClose={() => setIsLegendVisible(false)}
-        />
-      )}
-
-      {/* Show legend button when hidden */}
-      {!isLegendVisible && clusterData && Object.keys(clusterData).length > 0 && (
-        <button
-          onClick={() => setIsLegendVisible(true)}
-          className="absolute bottom-4 left-4 z-50 flex items-center gap-2 px-3 py-2 bg-black/60 backdrop-blur-sm border border-white/20 rounded-lg text-white hover:bg-black/70 transition-colors text-sm"
-          title="Show cluster legend"
-        >
-          <span className="w-2 h-2 rounded-full bg-blue-400"></span>
-          Clusters
-        </button>
-      )}
-
-      {/* Canvas */}
-      <div style={{ width: '100%', height: '100%' }}>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          fitView
-          fitViewOptions={{ padding: 2.25 }}
-          minZoom={0.1}
-          maxZoom={4}
-          nodesDraggable={false}
-          elementsSelectable={true}
-          panOnScroll={true}
-          zoomOnScroll={false}
-          zoomOnPinch={true}
-          panOnScrollMode={PanOnScrollMode.Free}
-          panOnScrollSpeed={1}
-          defaultEdgeOptions={{
-            type: 'custom',
-            style: { stroke: '#9CA3AF', strokeWidth: 2 },
-            markerEnd: { type: MarkerType.ArrowClosed, color: '#9CA3AF' },
-          }}
-          edgesUpdatable={false}
-          edgesFocusable={true}
-          nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
-        >
-          <Background variant={BackgroundVariant.Dots} gap={32} size={1} color="#2a2a2a" />
-        </ReactFlow>
-      </div>
+      {/* Chat panel */}
+      <ChatPanel
+        isOpen={isChatPanelOpen}
+        onClose={() => setIsChatPanelOpen(false)}
+        lineage={buildLineage(selectedNodeId)}
+      />
     </div>
   );
 }
