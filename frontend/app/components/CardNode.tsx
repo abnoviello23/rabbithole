@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Handle, Position, NodeProps, NodeToolbar, useReactFlow, Edge } from 'reactflow';
 import { MessageSquarePlus, ExternalLink, Sparkles } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -179,23 +179,36 @@ interface AutoExpandingTextareaProps extends React.TextareaHTMLAttributes<HTMLTe
   autoFocus?: boolean;
 }
 
-function AutoExpandingTextarea({ 
+const AutoExpandingTextarea = React.forwardRef<HTMLTextAreaElement, AutoExpandingTextareaProps>(({ 
   autoFocus, 
   className = '', 
   onKeyDown,
   onChange,
+  onDoubleClick,
+  onMouseDown,
+  onMouseMove,
   ...props 
-}: AutoExpandingTextareaProps) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+}, ref) => {
+  const internalRef = useRef<HTMLTextAreaElement>(null);
+  
+  // Use callback ref to support both forwarded refs and internal ref
+  const setRefs = (element: HTMLTextAreaElement | null) => {
+    internalRef.current = element;
+    if (typeof ref === 'function') {
+      ref(element);
+    } else if (ref) {
+      (ref as React.MutableRefObject<HTMLTextAreaElement | null>).current = element;
+    }
+  };
 
   useEffect(() => {
-    if (autoFocus && textareaRef.current) {
-      textareaRef.current.focus();
+    if (autoFocus && internalRef.current) {
+      internalRef.current.focus();
     }
   }, [autoFocus]);
 
   const adjustHeight = () => {
-    const textarea = textareaRef.current;
+    const textarea = internalRef.current;
     if (textarea) {
       textarea.style.height = 'auto';
       textarea.style.height = `${textarea.scrollHeight}px`;
@@ -205,6 +218,33 @@ function AutoExpandingTextarea({
   useEffect(() => {
     adjustHeight();
   }, [props.value]);
+
+  // Add capture-phase event listeners to prevent ReactFlow from handling events
+  useEffect(() => {
+    const textarea = internalRef.current;
+    if (!textarea) return;
+
+    const stopPropagation = (e: Event) => {
+      e.stopPropagation();
+    };
+
+    // Use capture phase to catch events before ReactFlow
+    textarea.addEventListener('mousedown', stopPropagation, true);
+    textarea.addEventListener('mouseup', stopPropagation, true);
+    textarea.addEventListener('mousemove', stopPropagation, true);
+    textarea.addEventListener('dblclick', stopPropagation, true);
+    textarea.addEventListener('wheel', stopPropagation, true);
+    textarea.addEventListener('contextmenu', stopPropagation, true);
+
+    return () => {
+      textarea.removeEventListener('mousedown', stopPropagation, true);
+      textarea.removeEventListener('mouseup', stopPropagation, true);
+      textarea.removeEventListener('mousemove', stopPropagation, true);
+      textarea.removeEventListener('dblclick', stopPropagation, true);
+      textarea.removeEventListener('wheel', stopPropagation, true);
+      textarea.removeEventListener('contextmenu', stopPropagation, true);
+    };
+  }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     adjustHeight();
@@ -216,17 +256,64 @@ function AutoExpandingTextarea({
     onKeyDown?.(e);
   };
 
+  // Prevent double-click zoom - stop propagation to prevent ReactFlow from handling it
+  const handleDoubleClick = (e: React.MouseEvent<HTMLTextAreaElement>) => {
+    e.stopPropagation();
+    // Don't preventDefault - we want normal word selection behavior
+    onDoubleClick?.(e);
+  };
+
+  // Prevent panning when clicking/dragging in textarea
+  const handleMouseDown = (e: React.MouseEvent<HTMLTextAreaElement>) => {
+    e.stopPropagation();
+    // Don't preventDefault - we need normal text selection behavior
+    onMouseDown?.(e);
+  };
+
+  // Prevent panning when dragging over textarea
+  const handleMouseMove = (e: React.MouseEvent<HTMLTextAreaElement>) => {
+    e.stopPropagation();
+    // Don't preventDefault - we want normal text selection behavior
+    onMouseMove?.(e);
+  };
+
+  // Prevent canvas interactions when interacting with textarea
+  const handleMouseUp = (e: React.MouseEvent<HTMLTextAreaElement>) => {
+    e.stopPropagation();
+    // Don't preventDefault - we want normal text selection behavior
+  };
+
+  // Prevent zoom on wheel/scroll
+  const handleWheel = (e: React.WheelEvent<HTMLTextAreaElement>) => {
+    e.stopPropagation();
+    // Don't preventDefault on wheel - we want normal textarea scrolling
+  };
+
+  // Prevent context menu from interfering
+  const handleContextMenu = (e: React.MouseEvent<HTMLTextAreaElement>) => {
+    e.stopPropagation();
+    // Allow default context menu for text selection
+  };
+
   return (
     <textarea
-      ref={textareaRef}
+      ref={setRefs}
       className={className}
       onKeyDown={handleKeyDown}
       onChange={handleChange}
+      onDoubleClick={handleDoubleClick}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onWheel={handleWheel}
+      onContextMenu={handleContextMenu}
       rows={1}
       {...props}
     />
   );
-}
+});
+
+AutoExpandingTextarea.displayName = 'AutoExpandingTextarea';
 
 export function CardNode({ data, id, onAddNote, onNodeClick, isInActivePath, isSelected, isChatPanelOpen, edges }: CardNodeComponentProps) {
   const [show, setShow] = useState(false);
@@ -444,15 +531,23 @@ useEffect(() => {
         <div
           ref={toolbarRef}
           className="rounded-xl border border-white/10 bg-neutral-900 text-neutral-100 shadow-xl p-2 w-64"
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseUp={(e) => e.stopPropagation()}
+          onMouseMove={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
         >
-          <input
+          <AutoExpandingTextarea
             autoFocus
             placeholder="Ask a follow-up question"
-            className="w-full rounded-lg bg-neutral-800 px-2 py-1 text-sm outline-none"
+            className="w-full rounded-lg bg-neutral-800 px-2 py-1 text-sm outline-none resize-none overflow-hidden"
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && e.currentTarget.value.trim()) {
+              if (e.key === 'Enter' && !e.shiftKey && e.currentTarget.value.trim()) {
+                e.preventDefault();
                 onAddNote?.(id, e.currentTarget.value.trim());
                 e.currentTarget.value = '';
+                // Reset height after clearing
+                e.currentTarget.style.height = 'auto';
                 setShow(false);
               }
             }}
@@ -762,13 +857,18 @@ useEffect(() => {
             }}
             className="rounded-xl border border-white/20 bg-black/95 backdrop-blur-sm text-neutral-100 shadow-2xl p-2 w-64"
             onMouseDown={(e) => e.stopPropagation()}
+            onMouseUp={(e) => e.stopPropagation()}
+            onMouseMove={(e) => e.stopPropagation()}
+            onDoubleClick={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
           >
-            <input
-              ref={(input) => { if (input) setTimeout(() => input.focus(), 0); }}
+            <AutoExpandingTextarea
+              ref={(textarea) => { if (textarea) setTimeout(() => textarea.focus(), 0); }}
               placeholder="Ask a follow-up question"
-              className="w-full rounded-lg bg-transparent px-2 py-1 text-sm outline-none"
+              className="w-full rounded-lg bg-transparent px-2 py-1 text-sm outline-none resize-none overflow-hidden"
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && e.currentTarget.value.trim() && selectionPopup) {
+                if (e.key === 'Enter' && !e.shiftKey && e.currentTarget.value.trim() && selectionPopup) {
+                  e.preventDefault();
                   const userQuery = e.currentTarget.value.trim();
                   const selectedContext = selectionPopup.text;
                   console.log("userQuery:", userQuery, "selectedContext:", selectedContext);
@@ -787,6 +887,8 @@ useEffect(() => {
                   onAddNote?.(id, userQuery, selectedContext, selectionPopup.color);
 
                   e.currentTarget.value = '';
+                  // Reset height after clearing
+                  e.currentTarget.style.height = 'auto';
                   setSelectionPopup(null);
                 }
               }}
