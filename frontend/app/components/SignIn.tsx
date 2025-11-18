@@ -1,7 +1,7 @@
 'use client';
 
 import { signIn, signOut, useSession } from 'next-auth/react';
-import { LogOut } from 'lucide-react';
+import { LogOut, Share2 } from 'lucide-react';
 import { CostDisplay } from './CostDisplay';
 
 interface SignInProps {
@@ -9,9 +9,10 @@ interface SignInProps {
     used: number;
     max_total: number;
   };
+  onShareClick?: () => void;
 }
 
-export default function SignIn({ costInfo }: SignInProps) {
+export default function SignIn({ costInfo, onShareClick }: SignInProps) {
   const { data: session, status } = useSession();
 
   if (status === 'loading') {
@@ -27,6 +28,18 @@ export default function SignIn({ costInfo }: SignInProps) {
   if (session && session.user) {
     return (
       <div className="absolute top-4 right-4 z-50 flex items-center gap-3">
+        {/* Share Button */}
+        {onShareClick && (
+          <button
+            onClick={onShareClick}
+            className="px-3 py-2 backdrop-blur-sm border rounded-lg bg-neutral-800/80 hover:bg-neutral-700/80 border-white/20 text-white hover:border-blue-500/50 transition-colors flex items-center gap-2"
+            title="Share session"
+          >
+            <Share2 className="w-4 h-4" />
+            <span className="text-sm font-medium">Share</span>
+          </button>
+        )}
+
         {/* Cost Display */}
         {costInfo && (
           <CostDisplay used={costInfo.used} maxTotal={costInfo.max_total} />

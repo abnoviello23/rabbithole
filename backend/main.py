@@ -14,6 +14,7 @@ from sklearn.metrics import silhouette_score
 from auth import get_current_user
 import hashlib
 import time
+import uuid
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -1603,6 +1604,166 @@ async def list_sessions(
         return {"sessions": sessions}
     except Exception as e:
         logger.error(f"Error listing sessions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# SESSION SHARING ENDPOINTS
+# ============================================================================
+
+@app.post("/sessions/{session_id}/share")
+async def enable_session_sharing(
+    session_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Enable public sharing for a session. Generates a unique share token.
+    Requires authentication and session ownership.
+    """
+    try:
+        user_id = current_user["sub"]
+        sb = get_supabase()
+        
+        if not sb:
+            raise HTTPException(status_code=503, detail="Database not available")
+        
+        # Verify session exists and user is owner
+        session_response = sb.table('sessions').select('*').eq('session_id', session_id).execute()
+        
+        if not session_response.data:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        session_data = session_response.data[0]
+        if session_data.get('user_id') != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to share this session")
+        
+        # Generate UUID for share token
+        share_token = str(uuid.uuid4())
+        
+        # Update session with share token
+        update_response = sb.table('sessions').update({
+            'share_token': share_token,
+            'is_shared': True,
+            'shared_at': 'now()'
+        }).eq('session_id', session_id).execute()
+        
+        if not update_response.data:
+            raise HTTPException(status_code=500, detail="Failed to enable sharing")
+        
+        logger.info(f"✅ Sharing enabled for session {session_id[:8]}... by user {user_id}")
+        
+        return {
+            "status": "ok",
+            "share_token": share_token,
+            "share_url": f"/shared/{share_token}"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error enabling sharing: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/sessions/{session_id}/share")
+async def disable_session_sharing(
+    session_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Disable public sharing for a session. Removes the share token.
+    Requires authentication and session ownership.
+    """
+    try:
+        user_id = current_user["sub"]
+        sb = get_supabase()
+        
+        if not sb:
+            raise HTTPException(status_code=503, detail="Database not available")
+        
+        # Verify session exists and user is owner
+        session_response = sb.table('sessions').select('*').eq('session_id', session_id).execute()
+        
+        if not session_response.data:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        session_data = session_response.data[0]
+        if session_data.get('user_id') != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to modify this session")
+        
+        # Disable sharing
+        update_response = sb.table('sessions').update({
+            'share_token': None,
+            'is_shared': False,
+            'shared_at': None
+        }).eq('session_id', session_id).execute()
+        
+        logger.info(f"✅ Sharing disabled for session {session_id[:8]}... by user {user_id}")
+        
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error disabling sharing: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sessions/shared/{share_token}")
+async def get_shared_session(share_token: str):
+    """
+    Get a shared session by share token. Public endpoint, no authentication required.
+    Returns the latest snapshot of the session.
+    """
+    try:
+        sb = get_supabase()
+        
+        if not sb:
+            raise HTTPException(status_code=503, detail="Database not available")
+        
+        # Find session by share token
+        session_response = sb.table('sessions').select('*').eq('share_token', share_token).eq('is_shared', True).execute()
+        
+        if not session_response.data:
+            raise HTTPException(status_code=404, detail="Shared session not found")
+        
+        session_data = session_response.data[0]
+        session_id = session_data.get('session_id')
+        
+        # Get the latest snapshot for this session
+        snapshot_response = sb.table('session_snapshots').select('*').eq('session_id', session_id).order('created_at', desc=True).limit(1).execute()
+        
+        if not snapshot_response.data:
+            # No snapshot exists yet, return empty state
+            return {
+                "session": {
+                    "session_id": session_id,
+                    "name": session_data.get('name', 'New Session'),
+                    "created_at": session_data.get('created_at'),
+                    "user_id": session_data.get('user_id'),
+                },
+                "graph_state": {
+                    "sessionId": session_id,
+                    "nodes": [],
+                    "edges": []
+                }
+            }
+        
+        snapshot = snapshot_response.data[0]
+        graph_state = snapshot.get('graph_state', {})
+        
+        # Return session metadata and graph state
+        return {
+            "session": {
+                "session_id": session_id,
+                "name": session_data.get('name', 'New Session'),
+                "created_at": session_data.get('created_at'),
+                "user_id": session_data.get('user_id'),
+            },
+            "graph_state": graph_state
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting shared session: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
