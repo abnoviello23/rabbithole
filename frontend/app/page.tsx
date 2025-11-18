@@ -12,7 +12,7 @@ export default function Home() {
     return (
       <div className="flex items-center justify-center h-screen bg-black text-white">
         <div className="text-center">
-          <p className="text-xl font-semibold mb-2">Loading...</p>
+          <p className="text-xl font-semibold mb-2">Digging the rabbit's hole... </p>
         </div>
       </div>
     );

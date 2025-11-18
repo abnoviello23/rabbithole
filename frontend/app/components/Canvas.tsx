@@ -1726,6 +1726,31 @@ export default function Canvas() {
         {/* User Info with Cost Display and Share Button - Only show when authenticated */}
         {session?.user && (
           <div className="absolute top-4 right-4 z-50 flex items-center gap-3">
+            {/* Copy Summary Button */}
+            {nodes.length > 0 && (
+              <button
+                onClick={async () => {
+                  setIsExporting(true);
+                  try {
+                    await exportSessionToClipboard(nodes, edges, currentSessionName);
+                    alert('Session summary copied to clipboard!');
+                  } catch (error) {
+                    console.error('Failed to export session:', error);
+                    alert('Failed to copy to clipboard. Please try again.');
+                  } finally {
+                    setIsExporting(false);
+                  }
+                }}
+                disabled={isExporting}
+                className="px-3 py-2 backdrop-blur-sm border rounded-lg bg-neutral-800/80 hover:bg-neutral-700/80 border-white/20 text-white hover:border-blue-500/50 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Copy session summary to clipboard"
+              >
+                <Copy className="w-4 h-4" />
+                <span className="text-sm font-medium">
+                  {isExporting ? 'Copying...' : 'Copy Summary'}
+                </span>
+              </button>
+            )}
             <SignIn 
               costInfo={costInfo} 
               onShareClick={() => setIsShareDialogOpen(true)}
@@ -1776,32 +1801,6 @@ export default function Canvas() {
 
         {/* Bottom Left Buttons */}
         <div className="absolute bottom-4 left-4 z-50 flex items-center gap-2">
-          {/* Copy Session Summary Button */}
-          {nodes.length > 0 && (
-            <button
-              onClick={async () => {
-                setIsExporting(true);
-                try {
-                  await exportSessionToClipboard(nodes, edges, currentSessionName);
-                  alert('Session summary copied to clipboard!');
-                } catch (error) {
-                  console.error('Failed to export session:', error);
-                  alert('Failed to copy to clipboard. Please try again.');
-                } finally {
-                  setIsExporting(false);
-                }
-              }}
-              disabled={isExporting}
-              className="px-3 py-2 backdrop-blur-sm border rounded-lg bg-black/60 hover:bg-black/70 border-white/20 text-white transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
-              title="Copy session summary to clipboard"
-            >
-              <Copy className="w-4 h-4" />
-              <span className="text-sm font-medium">
-                {isExporting ? 'Copying...' : 'Copy Session Summary'}
-              </span>
-            </button>
-          )}
-
           {/* Show legend button when hidden */}
           {!isLegendVisible && clusterData && Object.keys(clusterData).length > 0 && (
             <button
