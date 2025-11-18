@@ -96,10 +96,8 @@ function SharedCanvasInner({ shareToken }: SharedCanvasProps) {
         const rfNodes = minimalToNodes(data.graph_state.nodes || []);
         const rfEdges = minimalToEdges(data.graph_state.edges || []);
         
-        // Apply layout
-        const layoutedNodes = layoutNodes(rfNodes, rfEdges);
-        
-        setNodes(layoutedNodes);
+        // Don't apply layout yet - wait for nodes to be measured first
+        setNodes(rfNodes);
         setEdges(rfEdges);
       })
       .catch((err) => {
@@ -160,35 +158,32 @@ function SharedCanvasInner({ shareToken }: SharedCanvasProps) {
     });
   }, [clusterData, setNodes]);
 
-  // Re-layout when nodes are measured (with guard to prevent infinite loops)
+  // Re-layout whenever node dimensions change (debounced for performance)
+  // This matches the logic in Canvas.tsx to ensure consistent layout behavior
   useEffect(() => {
     const allMeasured = nodes.every((n) => n.width && n.height);
     if (!allMeasured || nodes.length === 0) return;
 
-    // Check if nodes already have valid positions (not all at 0,0)
-    const hasValidPositions = nodes.some((n) => n.position.x !== 0 || n.position.y !== 0);
-    if (hasValidPositions) {
-      // Only re-layout if positions seem invalid
-      const needsLayout = nodes.every((n) => n.position.x === 0 && n.position.y === 0);
-      if (!needsLayout) return;
-    }
+    // Debounce layout calculation to avoid excessive recalculations
+    const timeoutId = setTimeout(() => {
+      const layoutedNodes = layoutNodes(nodes, edges);
 
-    const layoutedNodes = layoutNodes(nodes, edges);
-    
-    // Only update if positions actually changed significantly
-    const positionsChanged = layoutedNodes.some((ln, i) => {
-      const original = nodes[i];
-      if (!original) return true;
-      const dx = Math.abs(ln.position.x - original.position.x);
-      const dy = Math.abs(ln.position.y - original.position.y);
-      return dx > 5 || dy > 5; // Use larger threshold to prevent small changes
-    });
+      // Check if positions actually changed to avoid infinite loop
+      const positionsChanged = layoutedNodes.some((ln, i) => {
+        const original = nodes[i];
+        if (!original) return true;
+        return Math.abs(ln.position.x - original.position.x) > 1 ||
+                        Math.abs(ln.position.y - original.position.y) > 1;
+      });
 
-    if (positionsChanged) {
-      setNodes(layoutedNodes);
-    }
+      if (positionsChanged) {
+        setNodes(layoutedNodes);
+      }
+    }, 50); // Small debounce to batch rapid changes
+
+    return () => clearTimeout(timeoutId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes.map(n => `${n.id}:${n.width}:${n.height}`).join(','), edges.map(e => `${e.id}:${e.source}:${e.target}`).join(',')]);
+  }, [nodes.map(n => `${n.id}:${n.width}:${n.height}:${n.data?.isLoading}`).join(','), edges.map(e => `${e.id}:${e.source}:${e.target}`).join(',')]);
 
   if (isLoading) {
     return (
@@ -270,7 +265,7 @@ function SharedCanvasInner({ shareToken }: SharedCanvasProps) {
           panOnScrollSpeed={1}
           defaultEdgeOptions={{
             type: 'custom',
-            style: { stroke: '#9CA3AF', strokeWidth: 2, opacity: 0.8 },
+            style: { stroke: '#9CA3AF', strokeWidth: 2 },
             markerEnd: { type: MarkerType.ArrowClosed, color: '#9CA3AF' },
           }}
           edgesUpdatable={false}
