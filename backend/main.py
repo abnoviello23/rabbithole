@@ -731,6 +731,44 @@ In short: every answer should read like a compact, high-signal exploration node 
                 assistant_msg = f"**{node.title}**\n\n{node.content}"
                 messages.append({"role": "assistant", "content": assistant_msg})
 
+        # Check for similar queries in the conversation history to prevent duplicate responses
+        # Compare current query to recent queries in the path
+        current_query_text = request.user_query.lower().strip()
+        similar_query_found = False
+        similarity_threshold = 0.85  # Threshold for considering queries "too similar"
+        
+        if request.context and len(request.path.split("/")) > 1:
+            # Get recent queries from the conversation path
+            path_ids = request.path.split("/")
+            recent_queries = []
+            
+            # Collect queries from the last 3 nodes in the path (excluding root)
+            for node_id in path_ids[-3:]:
+                if node_id in request.context:
+                    node = request.context[node_id]
+                    if node.query:
+                        recent_queries.append(node.query.lower().strip())
+            
+            # Check similarity using simple text similarity (Jaccard similarity on words)
+            for recent_query in recent_queries:
+                if recent_query and current_query_text:
+                    # Simple similarity check: if queries are very similar in length and content
+                    if len(recent_query) > 0 and len(current_query_text) > 0:
+                        # Check if one query contains most of the other (simple containment check)
+                        words_recent = set(recent_query.split())
+                        words_current = set(current_query_text.split())
+                        
+                        if len(words_recent) > 0 and len(words_current) > 0:
+                            # Calculate Jaccard similarity (intersection over union)
+                            intersection = len(words_recent & words_current)
+                            union = len(words_recent | words_current)
+                            similarity = intersection / union if union > 0 else 0
+                            
+                            if similarity >= similarity_threshold:
+                                similar_query_found = True
+                                logger.warning(f"⚠️ Similar query detected: '{request.user_query}' is very similar to '{recent_query}' (similarity: {similarity:.2f})")
+                                break
+        
         # Add current user query (with optional selected context and source type prefix)
         if request.selected_context:
             current_query = f"User selected the following text: \"{request.selected_context}\"\n\n{request.user_query}"
@@ -741,6 +779,12 @@ In short: every answer should read like a compact, high-signal exploration node 
                 print("**" * 100)
             else:
                 current_query = request.user_query
+        
+        # If similar query found, add variation instruction to prevent identical responses
+        if similar_query_found:
+            # Add a note to encourage variation in the response
+            current_query = f"{current_query}\n\n[Note: Please provide a fresh perspective or different angle on this topic, as a similar question was recently asked in this conversation.]"
+            logger.info("🔄 Added variation instruction to prevent duplicate response")
 
         messages.append({"role": "user", "content": current_query})
 
