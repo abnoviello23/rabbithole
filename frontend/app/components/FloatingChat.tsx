@@ -1,11 +1,65 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { MessageSquare, X, Send, Sparkles } from 'lucide-react';
 
 interface FloatingChatProps {
   onQuerySubmit: (query: string) => Promise<void>;
 }
+
+// Auto-expanding textarea component
+interface AutoExpandingTextareaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {}
+
+const AutoExpandingTextarea = React.forwardRef<HTMLTextAreaElement, AutoExpandingTextareaProps>(
+  ({ className = '', onKeyDown, onChange, ...props }, ref) => {
+    const internalRef = useRef<HTMLTextAreaElement>(null);
+
+    const adjustHeight = () => {
+      const textarea = internalRef.current;
+      if (textarea) {
+        textarea.style.height = 'auto';
+        textarea.style.height = `${textarea.scrollHeight}px`;
+      }
+    };
+
+    useEffect(() => {
+      adjustHeight();
+    }, [props.value]);
+
+    const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      adjustHeight();
+      onChange?.(e);
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      adjustHeight();
+      onKeyDown?.(e);
+    };
+
+    // Use a callback ref to support both forwarded refs and regular refs
+    const setRefs = (element: HTMLTextAreaElement | null) => {
+      internalRef.current = element;
+      if (typeof ref === 'function') {
+        ref(element);
+      } else if (ref) {
+        (ref as React.MutableRefObject<HTMLTextAreaElement | null>).current = element;
+      }
+    };
+
+    return (
+      <textarea
+        ref={setRefs}
+        className={className}
+        onKeyDown={handleKeyDown}
+        onChange={handleChange}
+        rows={1}
+        {...props}
+      />
+    );
+  }
+);
+
+AutoExpandingTextarea.displayName = 'AutoExpandingTextarea';
 
 export function FloatingChat({ onQuerySubmit }: FloatingChatProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -13,7 +67,7 @@ export function FloatingChat({ onQuerySubmit }: FloatingChatProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [status, setStatus] = useState<string>('');
   const [matchedNode, setMatchedNode] = useState<{ title: string; similarity: number } | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-focus input when dialog opens
   useEffect(() => {
@@ -38,6 +92,10 @@ export function FloatingChat({ onQuerySubmit }: FloatingChatProps) {
         setQuery('');
         setStatus('');
         setMatchedNode(null);
+        // Reset textarea height
+        if (inputRef.current) {
+          inputRef.current.style.height = 'auto';
+        }
       }, 1500);
     } catch (error) {
       console.error('Failed to process query:', error);
@@ -47,7 +105,7 @@ export function FloatingChat({ onQuerySubmit }: FloatingChatProps) {
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
@@ -113,20 +171,22 @@ export function FloatingChat({ onQuerySubmit }: FloatingChatProps) {
 
             {/* Input */}
             <div className="relative">
-              <input
+              <AutoExpandingTextarea
                 ref={inputRef}
-                type="text"
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                }}
                 onKeyDown={handleKeyDown}
                 placeholder="What would you like to explore?"
                 disabled={isProcessing}
-                className="w-full px-4 py-3 pr-12 bg-neutral-800 border border-white/10 rounded-lg text-white placeholder-neutral-500 outline-none focus:border-blue-500/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full px-4 py-3 pr-12 bg-neutral-800 border border-white/10 rounded-lg text-white placeholder-neutral-500 outline-none focus:border-blue-500/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed resize-none overflow-hidden min-h-[48px]"
+                rows={1}
               />
               <button
                 onClick={handleSubmit}
                 disabled={!query.trim() || isProcessing}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-lg bg-blue-500 hover:bg-blue-600 disabled:bg-neutral-700 disabled:cursor-not-allowed transition-colors"
+                className="absolute right-2 top-2 p-2 rounded-lg bg-blue-500 hover:bg-blue-600 disabled:bg-neutral-700 disabled:cursor-not-allowed transition-colors"
                 title="Submit"
               >
                 <Send className="w-4 h-4 text-white" />
@@ -136,7 +196,7 @@ export function FloatingChat({ onQuerySubmit }: FloatingChatProps) {
             {/* Help Text */}
             {!isProcessing && (
               <p className="text-xs text-neutral-500 mt-2">
-                Press Enter to submit
+                Press Enter to submit • Shift+Enter for new line
               </p>
             )}
           </div>

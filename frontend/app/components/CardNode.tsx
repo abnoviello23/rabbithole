@@ -174,6 +174,60 @@ interface PersistentHighlight {
   nodeId: string;
 }
 
+// Auto-expanding textarea component
+interface AutoExpandingTextareaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
+  autoFocus?: boolean;
+}
+
+function AutoExpandingTextarea({ 
+  autoFocus, 
+  className = '', 
+  onKeyDown,
+  onChange,
+  ...props 
+}: AutoExpandingTextareaProps) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (autoFocus && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [autoFocus]);
+
+  const adjustHeight = () => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      textarea.style.height = `${textarea.scrollHeight}px`;
+    }
+  };
+
+  useEffect(() => {
+    adjustHeight();
+  }, [props.value]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    adjustHeight();
+    onChange?.(e);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    adjustHeight();
+    onKeyDown?.(e);
+  };
+
+  return (
+    <textarea
+      ref={textareaRef}
+      className={className}
+      onKeyDown={handleKeyDown}
+      onChange={handleChange}
+      rows={1}
+      {...props}
+    />
+  );
+}
+
 export function CardNode({ data, id, onAddNote, onNodeClick, isInActivePath, isSelected, isChatPanelOpen, edges }: CardNodeComponentProps) {
   const [show, setShow] = useState(false);
   const [showAgent, setShowAgent] = useState(false);
@@ -470,14 +524,17 @@ useEffect(() => {
           {data.isRoot ? (
             <div className="p-8 flex flex-col gap-4 justify-center flex-1">
               <h2 className="text-2xl font-semibold text-center">What's your rabbit hole? 🐰</h2>
-              <input
+              <AutoExpandingTextarea
                 autoFocus
                 placeholder="Ask your first question..."
-                className="w-full rounded-lg bg-neutral-800 border border-white/10 px-4 py-3 text-base outline-none focus:border-white/30 transition-colors"
+                className="w-full rounded-lg bg-neutral-800 border border-white/10 px-4 py-3 text-base outline-none focus:border-white/30 transition-colors resize-none overflow-hidden"
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && e.currentTarget.value.trim()) {
+                  if (e.key === 'Enter' && !e.shiftKey && e.currentTarget.value.trim()) {
+                    e.preventDefault();
                     onAddNote?.(id, e.currentTarget.value.trim());
                     e.currentTarget.value = '';
+                    // Reset height after clearing
+                    e.currentTarget.style.height = 'auto';
                   }
                 }}
               />
