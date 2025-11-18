@@ -31,6 +31,7 @@ import { SettingsPanel } from './SettingsPanel';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 import { useSession, signOut } from 'next-auth/react';
 import ShareDialog from './ShareDialog';
+import { useCollaboration } from '../hooks/useCollaboration';
 
 const STORAGE_KEY = 'rabbithole-sessions';
 
@@ -105,6 +106,7 @@ interface CanvasContextType {
   isChatPanelOpen: boolean;
   edges: Edge[];
   clusterData: ClusterResult | null;
+  lockedNodes?: Map<string, string>;
 }
 
 const CanvasContext = createContext<CanvasContextType | null>(null);
@@ -124,6 +126,8 @@ function CardNodeWrapper(props: any) {
       isSelected={props.id === context.selectedNodeId}
       isChatPanelOpen={context.isChatPanelOpen}
       edges={context.edges}
+      isLocked={context.lockedNodes?.has(props.id)}
+      lockedBy={context.lockedNodes?.get(props.id)}
     />
   );
 }
@@ -225,6 +229,82 @@ export default function Canvas() {
 
   // Get user ID from session
   const userId = session?.user?.email || 'anonymous';
+
+  // Set up collaboration WebSocket
+  const collaboration = useCollaboration({
+    sessionId: currentSessionId,
+    idToken: session?.idToken,
+    enabled: !!session?.idToken && currentSessionId !== '',
+    onEvent: (event) => {
+      // Handle remote events
+      if (event.user_id === userId) {
+        return; // Ignore our own events
+      }
+
+      switch (event.type) {
+        case 'node_add':
+          if (event.data?.node) {
+            setNodes((ns) => [...ns, event.data.node]);
+          }
+          if (event.data?.edge) {
+            setEdges((es) => [...es, event.data.edge]);
+          }
+          break;
+        case 'node_update':
+          if (event.data?.nodeId && event.data?.updates) {
+            setNodes((ns) =>
+              ns.map((n) =>
+                n.id === event.data.nodeId
+                  ? { ...n, ...event.data.updates }
+                  : n
+              )
+            );
+          }
+          break;
+        case 'node_delete':
+          if (event.data?.nodeId) {
+            setNodes((ns) => ns.filter((n) => n.id !== event.data.nodeId));
+          }
+          break;
+        case 'edge_add':
+          if (event.data?.edge) {
+            setEdges((es) => [...es, event.data.edge]);
+          }
+          break;
+        case 'edge_delete':
+          if (event.data?.edgeId) {
+            setEdges((es) => es.filter((e) => e.id !== event.data.edgeId));
+          }
+          break;
+        case 'selection_change':
+          if (event.data?.nodeId !== undefined) {
+            setSelectedNodeId(event.data.nodeId);
+          }
+          break;
+        case 'lock_failed':
+          // Show notification that lock failed
+          console.warn('Failed to lock node:', event.node_id);
+          break;
+      }
+    },
+  });
+
+  // Lock/unlock node handlers
+  const handleLockNode = useCallback((nodeId: string) => {
+    collaboration.sendEvent({
+      type: 'lock_node' as const,
+      data: { node_id: nodeId },
+      timestamp: Date.now(),
+    });
+  }, [collaboration]);
+
+  const handleUnlockNode = useCallback((nodeId: string) => {
+    collaboration.sendEvent({
+      type: 'unlock_node' as const,
+      data: { node_id: nodeId },
+      timestamp: Date.now(),
+    });
+  }, [collaboration]);
 
   // Set up auth error handler to sign out on 401 errors
   useEffect(() => {
@@ -434,6 +514,19 @@ export default function Canvas() {
               }
             : n
         );
+
+        // Broadcast node update via WebSocket
+        const updatedNode = updatedNodes.find((n) => n.id === nodeId);
+        if (updatedNode) {
+          collaboration.sendEvent({
+            type: 'node_update',
+            data: {
+              nodeId,
+              updates: { data: updatedNode.data },
+            },
+            timestamp: Date.now(),
+          });
+        }
         // Run clustering on all nodes (including the newly updated one)
         const allNodesContext: Record<string, NodeContext> = {};
         updatedNodes.forEach((node) => {
@@ -776,6 +869,13 @@ export default function Canvas() {
     setSelectedNodeId(nodeId);
     setIsChatPanelOpen(true);
     
+    // Broadcast selection change via WebSocket
+    collaboration.sendEvent({
+      type: 'selection_change',
+      data: { nodeId },
+      timestamp: Date.now(),
+    });
+    
     // Track node click event
     if (session?.idToken) {
       trackEvent({
@@ -789,7 +889,7 @@ export default function Canvas() {
         console.debug('Failed to track node click:', err);
       });
     }
-  }, [session, currentSessionId]);
+  }, [session, currentSessionId, collaboration]);
 
   // Handle floating chat query submission
   const handleFloatingChatQuery = useCallback(async (query: string) => {
@@ -874,8 +974,9 @@ export default function Canvas() {
       isChatPanelOpen,
       edges,
       clusterData,
+      lockedNodes: collaboration.lockedNodes,
     }),
-    [handleAddNote, handleAgentRequest, handleNodeClick, activePathNodeIds, selectedNodeId, isChatPanelOpen, edges, clusterData]
+    [handleAddNote, handleAgentRequest, handleNodeClick, activePathNodeIds, selectedNodeId, isChatPanelOpen, edges, clusterData, collaboration.lockedNodes]
   );
 
   // Generate session name from first edge label (initial query)
@@ -1353,6 +1454,17 @@ export default function Canvas() {
           costInfo={costInfo} 
           onShareClick={session?.user ? () => setIsShareDialogOpen(true) : undefined}
         />
+
+        {/* Collaboration Status Indicator */}
+        {collaboration.isConnected && (
+          <div className="absolute top-20 right-20 z-50 flex items-center gap-2 px-3 py-1.5 bg-green-500/20 backdrop-blur-sm border border-green-500/50 rounded-lg text-white text-xs">
+            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+            <span>{collaboration.activeUsers.size + 1} active</span>
+            {collaboration.lockedNodes.size > 0 && (
+              <span className="text-neutral-400">• {collaboration.lockedNodes.size} locked</span>
+            )}
+          </div>
+        )}
 
         {/* Share Dialog */}
         {session?.user && (

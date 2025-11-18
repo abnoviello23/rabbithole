@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { Handle, Position, NodeProps, NodeToolbar, useReactFlow, Edge } from 'reactflow';
-import { MessageSquarePlus, ExternalLink, Sparkles } from 'lucide-react';
+import { MessageSquarePlus, ExternalLink, Sparkles, Lock } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -166,6 +166,8 @@ interface CardNodeComponentProps extends NodeProps<CardNodeData> {
   isSelected?: boolean;
   isChatPanelOpen?: boolean;
   edges?: Edge[];
+  isLocked?: boolean;
+  lockedBy?: string;
 }
 
 interface PersistentHighlight {
@@ -228,7 +230,7 @@ function AutoExpandingTextarea({
   );
 }
 
-export function CardNode({ data, id, onAddNote, onNodeClick, isInActivePath, isSelected, isChatPanelOpen, edges }: CardNodeComponentProps) {
+export function CardNode({ data, id, onAddNote, onNodeClick, isInActivePath, isSelected, isChatPanelOpen, edges, isLocked, lockedBy }: CardNodeComponentProps) {
   const [show, setShow] = useState(false);
   const [showAgent, setShowAgent] = useState(false);
   const [showSources, setShowSources] = useState(false);
@@ -520,6 +522,16 @@ useEffect(() => {
             }}
           />
         )}
+        {/* Lock indicator */}
+        {isLocked && (
+          <div className="absolute top-2 right-2 z-20 flex items-center gap-1 px-2 py-1 rounded-lg bg-yellow-500/20 border border-yellow-500/50 backdrop-blur-sm">
+            <Lock className="w-3 h-3 text-yellow-400" />
+            <span className="text-xs text-yellow-400">
+              {lockedBy ? `Locked by ${lockedBy.substring(0, 8)}...` : 'Locked'}
+            </span>
+          </div>
+        )}
+
         <div className="flex flex-col gap-2 min-h-full relative z-10">
           {data.isRoot ? (
             <div className="p-8 flex flex-col gap-4 justify-center flex-1">

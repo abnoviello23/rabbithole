@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
-from auth import get_current_user
+from auth import get_current_user, verify_google_token
 import hashlib
 import time
 import uuid
@@ -29,6 +29,8 @@ load_dotenv(env_path)
 # ============================================================================
 from supabase import create_client, Client
 from contextlib import asynccontextmanager
+from fastapi import WebSocket, Query
+from websocket import websocket_endpoint, manager
 
 # Supabase client (initialized on startup)
 supabase: Client = None
@@ -1808,6 +1810,298 @@ async def get_shared_session(share_token: str):
         raise
     except Exception as e:
         logger.error(f"Error getting shared session: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# WEBSOCKET ENDPOINT FOR COLLABORATION
+# ============================================================================
+
+@app.websocket("/ws/session/{session_id}")
+async def websocket_session(
+    websocket: WebSocket,
+    session_id: str,
+    token: str = Query(...)
+):
+    """
+    WebSocket endpoint for real-time collaboration.
+    Requires authentication token as query parameter.
+    """
+    try:
+        # Verify token and get user
+        user_info = verify_google_token(token)
+        user_id = user_info["sub"]
+        
+        # Check if user has access to this session
+        has_access = await check_session_access(session_id, user_id)
+        if not has_access:
+            await websocket.close(code=1008, reason="Access denied")
+            return
+        
+        # Connect to WebSocket
+        await websocket_endpoint(websocket, session_id, user_id)
+    except HTTPException as e:
+        await websocket.close(code=1008, reason=str(e.detail))
+    except Exception as e:
+        logger.error(f"WebSocket connection error: {e}")
+        await websocket.close(code=1011, reason="Internal server error")
+
+
+# ============================================================================
+# COLLABORATION PERMISSION HELPERS
+# ============================================================================
+
+async def check_session_access(session_id: str, user_id: str) -> bool:
+    """Check if user has access to a session (owner, collaborator, or public share)."""
+    sb = get_supabase()
+    if not sb:
+        return False
+    
+    try:
+        # Check if user is owner
+        session_response = sb.table('sessions').select('*').eq('session_id', session_id).execute()
+        if not session_response.data:
+            return False
+        
+        session_data = session_response.data[0]
+        if session_data.get('user_id') == user_id:
+            return True  # Owner always has access
+        
+        # Check if user is a collaborator
+        collab_response = sb.table('session_collaborators').select('*').eq('session_id', session_id).eq('user_id', user_id).execute()
+        if collab_response.data:
+            return True  # Collaborator has access
+        
+        # Check if session is publicly shared (view-only)
+        if session_data.get('is_shared') and session_data.get('share_token'):
+            return True  # Public share allows view access
+        
+        return False
+    except Exception as e:
+        logger.error(f"Error checking session access: {e}")
+        return False
+
+
+async def get_session_permission(session_id: str, user_id: str) -> str:
+    """Get user's permission level for a session: 'owner', 'edit', or 'view'."""
+    sb = get_supabase()
+    if not sb:
+        return 'view'
+    
+    try:
+        # Check if user is owner
+        session_response = sb.table('sessions').select('*').eq('session_id', session_id).execute()
+        if session_response.data:
+            session_data = session_response.data[0]
+            if session_data.get('user_id') == user_id:
+                return 'owner'
+        
+        # Check collaborator permission
+        collab_response = sb.table('session_collaborators').select('*').eq('session_id', session_id).eq('user_id', user_id).execute()
+        if collab_response.data:
+            return collab_response.data[0].get('permission', 'view')
+        
+        # Public share is view-only
+        if session_response.data:
+            session_data = session_response.data[0]
+            if session_data.get('is_shared'):
+                return 'view'
+        
+        return 'view'
+    except Exception as e:
+        logger.error(f"Error getting session permission: {e}")
+        return 'view'
+
+
+def can_edit(session_id: str, user_id: str) -> bool:
+    """Synchronous check if user can edit (owner or edit permission)."""
+    sb = get_supabase()
+    if not sb:
+        return False
+    
+    try:
+        # Check if user is owner
+        session_response = sb.table('sessions').select('*').eq('session_id', session_id).execute()
+        if session_response.data:
+            session_data = session_response.data[0]
+            if session_data.get('user_id') == user_id:
+                return True
+        
+        # Check collaborator permission
+        collab_response = sb.table('session_collaborators').select('*').eq('session_id', session_id).eq('user_id', user_id).execute()
+        if collab_response.data:
+            return collab_response.data[0].get('permission') == 'edit'
+        
+        return False
+    except Exception as e:
+        logger.error(f"Error checking edit permission: {e}")
+        return False
+
+
+# ============================================================================
+# COLLABORATOR MANAGEMENT ENDPOINTS
+# ============================================================================
+
+class AddCollaboratorRequest(BaseModel):
+    user_email: str  # Email of user to invite
+    permission: str = "edit"  # "view" or "edit"
+
+
+@app.post("/sessions/{session_id}/collaborators")
+async def add_collaborator(
+    session_id: str,
+    request: AddCollaboratorRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Add a collaborator to a session. Requires owner permission."""
+    user_id = current_user["sub"]
+    sb = get_supabase()
+    
+    if not sb:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    # Verify user is owner
+    session_response = sb.table('sessions').select('*').eq('session_id', session_id).execute()
+    if not session_response.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session_data = session_response.data[0]
+    if session_data.get('user_id') != user_id:
+        raise HTTPException(status_code=403, detail="Only the owner can add collaborators")
+    
+    # Validate permission
+    if request.permission not in ['view', 'edit']:
+        raise HTTPException(status_code=400, detail="Permission must be 'view' or 'edit'")
+    
+    # Find user by email (you'll need to look up user_id from email)
+    # For now, we'll store the email and look it up later
+    # In production, you'd want a user lookup by email
+    
+    # For MVP, we'll accept user_id directly or look up by email
+    # This is a simplified version - in production you'd have a user lookup service
+    
+    # Insert collaborator (assuming we have user_id from email lookup)
+    # For now, we'll need to get user_id from email somehow
+    # This is a placeholder - you'll need to implement user lookup
+    
+    try:
+        # Check if collaborator already exists
+        existing = sb.table('session_collaborators').select('*').eq('session_id', session_id).eq('user_id', request.user_email).execute()
+        
+        if existing.data:
+            # Update existing collaborator
+            sb.table('session_collaborators').update({
+                'permission': request.permission,
+                'updated_at': 'now()'
+            }).eq('session_id', session_id).eq('user_id', request.user_email).execute()
+        else:
+            # Add new collaborator
+            # Note: In production, you'd look up user_id from email
+            # For now, we'll use email as a placeholder
+            sb.table('session_collaborators').insert({
+                'session_id': session_id,
+                'user_id': request.user_email,  # In production, this should be user_id from lookup
+                'permission': request.permission,
+                'invited_by': user_id
+            }).execute()
+        
+        logger.info(f"✅ Added collaborator: {request.user_email} to session {session_id[:8]}...")
+        
+        return {"status": "ok", "message": "Collaborator added"}
+    except Exception as e:
+        logger.error(f"Error adding collaborator: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sessions/{session_id}/collaborators")
+async def list_collaborators(
+    session_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """List all collaborators for a session. Requires owner permission."""
+    user_id = current_user["sub"]
+    sb = get_supabase()
+    
+    if not sb:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    # Verify user is owner
+    session_response = sb.table('sessions').select('*').eq('session_id', session_id).execute()
+    if not session_response.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session_data = session_response.data[0]
+    if session_data.get('user_id') != user_id:
+        raise HTTPException(status_code=403, detail="Only the owner can view collaborators")
+    
+    try:
+        collaborators = sb.table('session_collaborators').select('*').eq('session_id', session_id).execute()
+        return {"collaborators": collaborators.data if collaborators.data else []}
+    except Exception as e:
+        logger.error(f"Error listing collaborators: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/sessions/{session_id}/collaborators/{collaborator_user_id}")
+async def remove_collaborator(
+    session_id: str,
+    collaborator_user_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Remove a collaborator from a session. Requires owner permission."""
+    user_id = current_user["sub"]
+    sb = get_supabase()
+    
+    if not sb:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    # Verify user is owner
+    session_response = sb.table('sessions').select('*').eq('session_id', session_id).execute()
+    if not session_response.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session_data = session_response.data[0]
+    if session_data.get('user_id') != user_id:
+        raise HTTPException(status_code=403, detail="Only the owner can remove collaborators")
+    
+    try:
+        sb.table('session_collaborators').delete().eq('session_id', session_id).eq('user_id', collaborator_user_id).execute()
+        logger.info(f"✅ Removed collaborator: {collaborator_user_id} from session {session_id[:8]}...")
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Error removing collaborator: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sessions/{session_id}/enable-collaboration")
+async def enable_collaboration(
+    session_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Enable collaboration for a session. Requires owner permission."""
+    user_id = current_user["sub"]
+    sb = get_supabase()
+    
+    if not sb:
+        raise HTTPException(status_code=503, detail="Database not available")
+    
+    # Verify user is owner
+    session_response = sb.table('sessions').select('*').eq('session_id', session_id).execute()
+    if not session_response.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session_data = session_response.data[0]
+    if session_data.get('user_id') != user_id:
+        raise HTTPException(status_code=403, detail="Only the owner can enable collaboration")
+    
+    try:
+        sb.table('sessions').update({
+            'collaboration_enabled': True
+        }).eq('session_id', session_id).execute()
+        
+        return {"status": "ok", "collaboration_enabled": True}
+    except Exception as e:
+        logger.error(f"Error enabling collaboration: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -648,3 +648,306 @@ export async function getSharedSession(shareToken: string): Promise<SharedSessio
   }
 }
 
+// ============================================================================
+// COLLABORATION & WEBSOCKET
+// ============================================================================
+
+export interface CollaborationEvent {
+  type: 'node_add' | 'node_update' | 'node_delete' | 'edge_add' | 'edge_delete' | 
+        'cursor_move' | 'selection_change' | 'node_locked' | 'node_unlocked' | 
+        'user_joined' | 'user_left' | 'pong' | 'error' | 'lock_failed' | 
+        'lock_node' | 'unlock_node' | 'ping';
+  user_id?: string;
+  timestamp?: number;
+  data?: any;
+  message?: string;
+  node_id?: string;
+}
+
+export interface Collaborator {
+  id: number;
+  session_id: string;
+  user_id: string;
+  permission: 'view' | 'edit';
+  invited_by?: string;
+  joined_at: string;
+}
+
+export interface AddCollaboratorRequest {
+  user_email: string;
+  permission: 'view' | 'edit';
+}
+
+/**
+ * Add a collaborator to a session
+ */
+export async function addCollaborator(
+  sessionId: string,
+  request: AddCollaboratorRequest,
+  idToken?: string
+): Promise<{ status: string; message: string }> {
+  try {
+    const response = await fetchWithAuth(
+      `${API_BASE_URL}/sessions/${sessionId}/collaborators`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(request),
+      },
+      idToken
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to add collaborator: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof AuthError) {
+      throw error;
+    }
+    console.error('Failed to add collaborator:', error);
+    throw error;
+  }
+}
+
+/**
+ * List collaborators for a session
+ */
+export async function listCollaborators(
+  sessionId: string,
+  idToken?: string
+): Promise<{ collaborators: Collaborator[] }> {
+  try {
+    const response = await fetchWithAuth(
+      `${API_BASE_URL}/sessions/${sessionId}/collaborators`,
+      {
+        method: 'GET',
+      },
+      idToken
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to list collaborators: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof AuthError) {
+      throw error;
+    }
+    console.error('Failed to list collaborators:', error);
+    throw error;
+  }
+}
+
+/**
+ * Remove a collaborator from a session
+ */
+export async function removeCollaborator(
+  sessionId: string,
+  collaboratorUserId: string,
+  idToken?: string
+): Promise<{ status: string }> {
+  try {
+    const response = await fetchWithAuth(
+      `${API_BASE_URL}/sessions/${sessionId}/collaborators/${collaboratorUserId}`,
+      {
+        method: 'DELETE',
+      },
+      idToken
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to remove collaborator: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof AuthError) {
+      throw error;
+    }
+    console.error('Failed to remove collaborator:', error);
+    throw error;
+  }
+}
+
+/**
+ * Enable collaboration for a session
+ */
+export async function enableCollaboration(
+  sessionId: string,
+  idToken?: string
+): Promise<{ status: string; collaboration_enabled: boolean }> {
+  try {
+    const response = await fetchWithAuth(
+      `${API_BASE_URL}/sessions/${sessionId}/enable-collaboration`,
+      {
+        method: 'POST',
+      },
+      idToken
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to enable collaboration: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof AuthError) {
+      throw error;
+    }
+    console.error('Failed to enable collaboration:', error);
+    throw error;
+  }
+}
+
+/**
+ * WebSocket connection manager for real-time collaboration
+ */
+export class CollaborationWebSocket {
+  private ws: WebSocket | null = null;
+  private sessionId: string;
+  private idToken: string;
+  private reconnectAttempts = 0;
+  private maxReconnectAttempts = 5;
+  private reconnectDelay = 1000;
+  private messageQueue: CollaborationEvent[] = [];
+  private isConnected = false;
+  private listeners: Map<string, Set<(event: CollaborationEvent) => void>> = new Map();
+  private pingInterval: NodeJS.Timeout | null = null;
+
+  constructor(sessionId: string, idToken: string) {
+    this.sessionId = sessionId;
+    this.idToken = idToken;
+  }
+
+  connect(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      try {
+        // Get WebSocket URL (convert http/https to ws/wss)
+        const wsBaseUrl = API_BASE_URL.replace(/^http/, 'ws');
+        const wsUrl = `${wsBaseUrl}/ws/session/${this.sessionId}?token=${encodeURIComponent(this.idToken)}`;
+        
+        this.ws = new WebSocket(wsUrl);
+
+        this.ws.onopen = () => {
+          console.log('🔌 WebSocket connected');
+          this.isConnected = true;
+          this.reconnectAttempts = 0;
+          
+          // Send queued messages
+          while (this.messageQueue.length > 0) {
+            const message = this.messageQueue.shift();
+            if (message) {
+              this.send(message);
+            }
+          }
+
+          // Start ping interval (every 30 seconds)
+          this.pingInterval = setInterval(() => {
+            this.send({ type: 'ping', timestamp: Date.now() });
+          }, 30000);
+
+          resolve();
+        };
+
+        this.ws.onmessage = (event) => {
+          try {
+            const data: CollaborationEvent = JSON.parse(event.data);
+            this.handleMessage(data);
+          } catch (error) {
+            console.error('Failed to parse WebSocket message:', error);
+          }
+        };
+
+        this.ws.onerror = (error) => {
+          console.error('❌ WebSocket error:', error);
+          reject(error);
+        };
+
+        this.ws.onclose = () => {
+          console.log('🔌 WebSocket closed');
+          this.isConnected = false;
+          
+          if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
+          }
+
+          // Attempt to reconnect
+          if (this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.reconnectAttempts++;
+            console.log(`🔄 Reconnecting... (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+            setTimeout(() => {
+              this.connect().catch(err => {
+                console.error('Reconnection failed:', err);
+              });
+            }, this.reconnectDelay * this.reconnectAttempts);
+          }
+        };
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  private handleMessage(event: CollaborationEvent) {
+    // Emit to all listeners for this event type
+    const listeners = this.listeners.get(event.type);
+    if (listeners) {
+      listeners.forEach(listener => listener(event));
+    }
+
+    // Also emit to 'all' listeners
+    const allListeners = this.listeners.get('all');
+    if (allListeners) {
+      allListeners.forEach(listener => listener(event));
+    }
+  }
+
+  send(event: CollaborationEvent) {
+    if (!this.isConnected || !this.ws) {
+      // Queue message for when connection is established
+      this.messageQueue.push(event);
+      return;
+    }
+
+    try {
+      this.ws.send(JSON.stringify(event));
+    } catch (error) {
+      console.error('Failed to send WebSocket message:', error);
+      this.messageQueue.push(event);
+    }
+  }
+
+  on(eventType: string, listener: (event: CollaborationEvent) => void) {
+    if (!this.listeners.has(eventType)) {
+      this.listeners.set(eventType, new Set());
+    }
+    this.listeners.get(eventType)!.add(listener);
+  }
+
+  off(eventType: string, listener: (event: CollaborationEvent) => void) {
+    const listeners = this.listeners.get(eventType);
+    if (listeners) {
+      listeners.delete(listener);
+    }
+  }
+
+  disconnect() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
+
+    if (this.ws) {
+      this.ws.close();
+      this.ws = null;
+    }
+    this.isConnected = false;
+  }
+}
+
