@@ -31,6 +31,7 @@ import { exportSessionToClipboard } from '../utils/sessionExport';
 import { SettingsPanel } from './SettingsPanel';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 import { useSession, signOut } from 'next-auth/react';
+import { useRouter } from 'next/navigation';
 import ShareDialog from './ShareDialog';
 
 // Cache configuration
@@ -305,7 +306,8 @@ function FitViewHelper({ shouldFitView, onFitViewComplete, nodes }: { shouldFitV
 }
 
 export default function Canvas() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
+  const router = useRouter();
   // Initialize with empty arrays to show UI immediately, then load session data
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -338,6 +340,13 @@ export default function Canvas() {
 
   // Get user ID from session
   const userId = session?.user?.email || 'anonymous';
+
+  // Redirect to sign in if not authenticated (safety check)
+  useEffect(() => {
+    if (status === 'unauthenticated' || (!session?.user && status !== 'loading')) {
+      router.push('/');
+    }
+  }, [status, session, router]);
 
   // Set up auth error handler to sign out on 401 errors
   useEffect(() => {
@@ -1714,13 +1723,15 @@ export default function Canvas() {
           <SettingsPanel onSettingsChange={setUserSettings} iconOnly={true} />
         </div>
 
-        {/* User Info with Cost Display and Share Button */}
-        <div className="absolute top-4 right-4 z-50 flex items-center gap-3">
-          <SignIn 
-            costInfo={costInfo} 
-            onShareClick={session?.user ? () => setIsShareDialogOpen(true) : undefined}
-          />
-        </div>
+        {/* User Info with Cost Display and Share Button - Only show when authenticated */}
+        {session?.user && (
+          <div className="absolute top-4 right-4 z-50 flex items-center gap-3">
+            <SignIn 
+              costInfo={costInfo} 
+              onShareClick={() => setIsShareDialogOpen(true)}
+            />
+          </div>
+        )}
 
         {/* Share Dialog */}
         {session?.user && (
