@@ -137,10 +137,7 @@ export interface Subtopic {
   category: string;
 }
 
-export interface Source {
-  url: string;
-  title?: string;
-}
+import type { Source } from '../utils/api';
 
 export interface CardNodeData {
   title: string;

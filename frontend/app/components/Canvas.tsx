@@ -26,17 +26,104 @@ import { ClusterLegend } from './ClusterLegend';
 import SignIn from './SignIn';
 import { FileText } from 'lucide-react';
 import { layoutNodes } from '../utils/layout';
-import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo, GraphState, MinimalNode, MinimalEdge, trackEvent, updateSession, listSessions, setAuthErrorHandler, AuthError, UserSettings } from '../utils/api';
+import { generateContent, NodeContext, autoMode, clusterNodes, ClusterResult, researchWithAgent, AgentEvent, Source, CostInfo, getCostInfo, GraphState, MinimalNode, MinimalEdge, trackEvent, updateSession, listSessions, getSession, setAuthErrorHandler, AuthError, UserSettings } from '../utils/api';
 import { SettingsPanel } from './SettingsPanel';
 import { INITIAL_NODES, INITIAL_EDGES } from '../data/initialNodes';
 import { useSession, signOut } from 'next-auth/react';
 import ShareDialog from './ShareDialog';
 
-const STORAGE_KEY = 'rabbithole-sessions';
+// Cache configuration
+const CACHE_KEY_SESSIONS_LIST = 'rabbithole-sessions-list';
+const CACHE_KEY_SESSION_PREFIX = 'rabbithole-session-';
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes cache TTL
+
+interface CachedSessionData {
+  sessionId: string;
+  name: string;
+  nodes: Node<CardNodeData>[];
+  edges: Edge[];
+  cachedAt: number;
+  lastModified?: string; // Backend timestamp for conflict detection
+}
+
+interface CachedSessionsList {
+  sessions: Array<{ session_id: string; name: string; last_accessed_at?: string }>;
+  cachedAt: number;
+}
 
 // Helper function to remove emojis from text
 function stripEmojis(text: string): string {
   return text.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
+}
+
+// Cache helper functions
+function getCachedSessionsList(): CachedSessionsList | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const cached = localStorage.getItem(CACHE_KEY_SESSIONS_LIST);
+    if (!cached) return null;
+    const data: CachedSessionsList = JSON.parse(cached);
+    // Check if cache is expired
+    if (Date.now() - data.cachedAt > CACHE_TTL_MS) {
+      localStorage.removeItem(CACHE_KEY_SESSIONS_LIST);
+      return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function setCachedSessionsList(sessions: Array<{ session_id: string; name: string; last_accessed_at?: string }>): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const data: CachedSessionsList = {
+      sessions,
+      cachedAt: Date.now(),
+    };
+    localStorage.setItem(CACHE_KEY_SESSIONS_LIST, JSON.stringify(data));
+  } catch (error) {
+    console.debug('Failed to cache sessions list:', error);
+  }
+}
+
+function getCachedSession(sessionId: string): CachedSessionData | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const cached = localStorage.getItem(`${CACHE_KEY_SESSION_PREFIX}${sessionId}`);
+    if (!cached) return null;
+    const data: CachedSessionData = JSON.parse(cached);
+    // Check if cache is expired
+    if (Date.now() - data.cachedAt > CACHE_TTL_MS) {
+      localStorage.removeItem(`${CACHE_KEY_SESSION_PREFIX}${sessionId}`);
+      return null;
+    }
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function setCachedSession(sessionId: string, name: string, nodes: Node<CardNodeData>[], edges: Edge[], lastModified?: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const data: CachedSessionData = {
+      sessionId,
+      name,
+      nodes,
+      edges,
+      cachedAt: Date.now(),
+      lastModified,
+    };
+    localStorage.setItem(`${CACHE_KEY_SESSION_PREFIX}${sessionId}`, JSON.stringify(data));
+  } catch (error) {
+    console.debug('Failed to cache session:', error);
+  }
+}
+
+function clearCachedSession(sessionId: string): void {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(`${CACHE_KEY_SESSION_PREFIX}${sessionId}`);
 }
 
 // Helper functions to convert React Flow nodes/edges to minimal format (excludes layout data)
@@ -93,6 +180,40 @@ function buildGraphState(
     nodes: nodesToMinimal(nodes),
     edges: edgesToMinimal(edges, nodes),
   };
+}
+
+// Helper functions to convert minimal format back to full Node/Edge format
+function minimalToNodes(minimalNodes: MinimalNode[]): Node<CardNodeData>[] {
+  return minimalNodes.map(node => ({
+    id: node.id,
+    type: 'card',
+    data: {
+      title: node.data.title,
+      body: node.data.body,
+      image: node.data.image,
+      isRoot: node.data.isRoot,
+      color: node.data.color,
+      suggestedQuestions: node.data.suggestedQuestions,
+      subtopics: node.data.subtopics,
+      sourcesCount: node.data.sourcesCount,
+      sources: node.data.sources,
+    },
+    position: { x: 0, y: 0 }, // Will be positioned by layoutNodes
+  }));
+}
+
+function minimalToEdges(minimalEdges: MinimalEdge[]): Edge[] {
+  return minimalEdges.map(edge => ({
+    id: `${edge.source}-${edge.target}`,
+    source: edge.source,
+    target: edge.target,
+    type: 'custom',
+    label: edge.label,
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+    },
+    data: edge.data,
+  }));
 }
 
 // Create context for dynamic props
@@ -180,16 +301,6 @@ function FitViewHelper({ shouldFitView, onFitViewComplete, nodes }: { shouldFitV
   }, [shouldFitView, fitView, onFitViewComplete, nodes]);
 
   return null;
-}
-
-interface SessionData {
-  nodes: Node<CardNodeData>[];
-  edges: Edge[];
-  sessionId: string;
-}
-
-interface Sessions {
-  [sessionName: string]: SessionData;
 }
 
 export default function Canvas() {
@@ -892,21 +1003,51 @@ export default function Canvas() {
     return 'New Session';
   }, [nodes]);
 
-  // Load all sessions from localStorage
-  const loadSessionsList = useCallback(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const allSessions: Sessions = JSON.parse(stored);
-        setSessions(Object.keys(allSessions));
+  // Load all sessions from cache first, then sync from backend
+  const loadSessionsList = useCallback(async () => {
+    if (!session?.idToken) {
+      // If not authenticated, try to load from cache anyway
+      const cached = getCachedSessionsList();
+      if (cached) {
+        const sessionNames = cached.sessions.map(s => s.name || s.session_id);
+        setSessions(sessionNames);
       }
-    } catch (error) {
-      console.error('Failed to load sessions list:', error);
+      return;
     }
-  }, []);
+    
+    // Try cache first for instant load
+    const cached = getCachedSessionsList();
+    if (cached) {
+      const sessionNames = cached.sessions.map(s => s.name || s.session_id);
+      setSessions(sessionNames);
+    }
+    
+    // Sync from backend in background
+    try {
+      const backendSessions = await listSessions(session.idToken);
+      // Use session names from backend, fallback to session_id if name not available
+      const sessionNames = backendSessions.map(s => s.name || s.session_id);
+      setSessions(sessionNames);
+      
+      // Update cache with fresh data
+      setCachedSessionsList(backendSessions);
+    } catch (error) {
+      // Don't show error for auth errors - user will be redirected to sign-in
+      if (error instanceof AuthError) {
+        return;
+      }
+      // If backend fails but we have cache, keep using cache
+      if (!cached) {
+        console.error('Failed to load sessions list:', error);
+      } else {
+        console.debug('Failed to sync sessions list from backend, using cache:', error);
+      }
+    }
+  }, [session?.idToken]);
 
-  // Save current session to localStorage and backend (debounced)
+  // Save current session to both cache and backend (debounced)
+  // Note: Backend snapshots are saved automatically with each API call (generate, automode, cluster)
+  // This function updates session metadata (name, node_count, edge_count) in both cache and backend
   const saveSession = useCallback((name: string, currentNodes: Node<CardNodeData>[], currentEdges: Edge[]) => {
     if (typeof window === 'undefined') return;
 
@@ -918,10 +1059,7 @@ export default function Canvas() {
     // Debounce save by 500ms
     saveTimeoutRef.current = setTimeout(async () => {
       try {
-        const stored = localStorage.getItem(STORAGE_KEY);
-        const allSessions: Sessions = stored ? JSON.parse(stored) : {};
-
-        // Filter out subtopic nodes before saving (they're now displayed inline)
+        // Filter out subtopic nodes before counting (they're now displayed inline)
         const filteredNodes = currentNodes.filter(n => !n.data?.isSubtopic);
 
         // Get IDs of subtopic nodes to filter out their edges
@@ -934,119 +1072,225 @@ export default function Canvas() {
           e => !subtopicNodeIds.has(e.source) && !subtopicNodeIds.has(e.target)
         );
 
-        allSessions[name] = {
-          nodes: filteredNodes,
-          edges: filteredEdges,
-          sessionId: currentSessionId,
-        };
-
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(allSessions));
-        loadSessionsList();
+        // Save to cache immediately (optimistic update)
+        if (currentSessionId) {
+          setCachedSession(currentSessionId, name, filteredNodes, filteredEdges);
+        }
 
         // Sync session metadata to backend
         if (session?.idToken && currentSessionId) {
-          updateSession({
+          await updateSession({
             session_id: currentSessionId,
             name: name,
             node_count: filteredNodes.length,
             edge_count: filteredEdges.length,
-          }, session.idToken).catch(err => {
-            // Don't log auth errors for session sync - user will be redirected
-            if (err instanceof AuthError) {
-              return;
-            }
-            console.debug('Failed to sync session to backend:', err);
-          });
+          }, session.idToken);
+          
+          // Reload sessions list to reflect name changes
+          loadSessionsList();
         }
-
-        // Note: Backend snapshots are now saved automatically with each API call
-        // No need to explicitly save here since localStorage is source of truth
       } catch (error) {
-        console.error('Failed to save session:', error);
+        // Don't log auth errors for session sync - user will be redirected
+        if (error instanceof AuthError) {
+          return;
+        }
+        console.debug('Failed to sync session to backend:', error);
+        // Cache is already updated, so user can continue working
       }
     }, 500);
   }, [loadSessionsList, currentSessionId, session]);
 
-  // Load a specific session
-  const loadSession = useCallback((name: string) => {
-    if (typeof window === 'undefined') return;
+  // Helper function to sync session from backend (used in loadSession)
+  const syncSessionFromBackend = useCallback(async (
+    sessionId: string,
+    name: string,
+    applyFn: (sessionId: string, sessionName: string, nodes: Node<CardNodeData>[], edges: Edge[], shouldCluster: boolean) => void
+  ) => {
+    if (!session?.idToken) return;
+    
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const allSessions: Sessions = JSON.parse(stored);
-        const sessionData = allSessions[name];
-
-        if (sessionData) {
-          // Filter out old subtopic nodes (they're now displayed inline)
-          const filteredNodes = (sessionData.nodes || INITIAL_NODES).filter(n => !n.data?.isSubtopic);
-
-          // Get IDs of subtopic nodes to filter out their edges
-          const subtopicNodeIds = new Set(
-            (sessionData.nodes || []).filter(n => n.data?.isSubtopic).map(n => n.id)
-          );
-
-          // Filter out edges connected to subtopic nodes
-          const filteredEdges = (sessionData.edges || INITIAL_EDGES).filter(
-            e => !subtopicNodeIds.has(e.source) && !subtopicNodeIds.has(e.target)
-          );
-
-          setNodes(filteredNodes);
-          setEdges(filteredEdges);
-          setCurrentSessionName(name);
-
-          // Load or generate sessionId
-          const loadedSessionId = sessionData.sessionId || crypto.randomUUID();
-          setCurrentSessionId(loadedSessionId);
-          setShouldFitView(true); // Trigger fitView to center the view
-
-          // Defer clustering to after initial render to avoid blocking UI
-          // Run clustering asynchronously after a short delay to let UI render first
-          const loadedNodes = sessionData.nodes || INITIAL_NODES;
-          const allNodesContext: Record<string, NodeContext> = {};
-          loadedNodes.forEach((node) => {
-            if (!node.data?.isRoot && node.data?.title && node.data?.body) {
-              allNodesContext[node.id] = {
-                id: node.id,
-                title: node.data.title,
-                content: node.data.body,
-              };
-            }
-          });
-          
-          // Cluster the loaded nodes if there are enough nodes (deferred to avoid blocking)
-          if (Object.keys(allNodesContext).length > 1 && session?.idToken) {
-            hasShownLegendRef.current = false; // Reset so legend shows for loaded session
-            // Defer clustering to after initial render
-            setTimeout(() => {
-              // Build graph state for clustering
-              const clusterGraphState = buildGraphState(loadedSessionId, filteredNodes, filteredEdges);
-              clusterNodes(allNodesContext, loadedSessionId, clusterGraphState, session.idToken)
-                .then((result) => {
-                  setClusterData(result.clusters);
-                  if (result.costInfo) {
-                    setCostInfo(result.costInfo);
-                  }
-                })
-                .catch((error) => {
-                  // Don't show error for auth errors - user will be redirected to sign-in
-                  if (error instanceof AuthError) {
-                    console.log('Authentication required for clustering - user will be signed out');
-                    return;
-                  }
-                  console.error('Clustering failed on session load:', error);
-                });
-            }, 100); // Small delay to let UI render first
-          } else {
-            // Clear cluster data if not enough nodes or not authenticated
-            setClusterData(null);
-            hasShownLegendRef.current = false;
-          }
-        }
+      const sessionData = await getSession(sessionId, session.idToken);
+      const graphState = sessionData.graph_state;
+      
+      // Convert minimal nodes/edges to full format
+      const loadedNodes = minimalToNodes(graphState.nodes || []);
+      const loadedEdges = minimalToEdges(graphState.edges || []);
+      
+      const nodesToUse = loadedNodes.length > 0 ? loadedNodes : INITIAL_NODES;
+      const edgesToUse = loadedNodes.length > 0 ? loadedEdges : INITIAL_EDGES;
+      
+      // Check if backend data is newer than cache
+      const cached = getCachedSession(sessionId);
+      const backendModified = sessionData.session.created_at;
+      const shouldUpdate = !cached || !cached.lastModified || 
+        (backendModified && backendModified > cached.lastModified);
+      
+      if (shouldUpdate) {
+        // Update cache
+        setCachedSession(
+          sessionId,
+          sessionData.session.name || name,
+          nodesToUse,
+          edgesToUse,
+          backendModified
+        );
+        
+        // Update UI if data changed
+        applyFn(sessionId, sessionData.session.name || name, nodesToUse, edgesToUse, false);
       }
     } catch (error) {
+      // Silently fail - we have cached data to use
+      if (!(error instanceof AuthError)) {
+        console.debug('Failed to sync session from backend:', error);
+      }
+    }
+  }, [session?.idToken]);
+
+  // Load a specific session: cache first (instant), then sync from backend
+  const loadSession = useCallback(async (name: string) => {
+    if (typeof window === 'undefined') return;
+    
+    // Helper function to apply session data to UI
+    const applySessionData = (
+      sessionId: string,
+      sessionName: string,
+      nodes: Node<CardNodeData>[],
+      edges: Edge[],
+      shouldCluster: boolean = true
+    ) => {
+      // Apply layout to position nodes
+      const layoutedNodes = layoutNodes(nodes, edges);
+      
+      setNodes(layoutedNodes);
+      setEdges(edges);
+      setCurrentSessionName(sessionName);
+      setCurrentSessionId(sessionId);
+      setShouldFitView(true); // Trigger fitView to center the view
+      
+      // Build context for clustering
+      if (shouldCluster) {
+        const allNodesContext: Record<string, NodeContext> = {};
+        layoutedNodes.forEach((node) => {
+          if (!node.data?.isRoot && node.data?.title && node.data?.body) {
+            allNodesContext[node.id] = {
+              id: node.id,
+              title: node.data.title,
+              content: node.data.body,
+            };
+          }
+        });
+        
+        // Cluster the loaded nodes if there are enough nodes (deferred to avoid blocking)
+        if (Object.keys(allNodesContext).length > 1 && session?.idToken) {
+          hasShownLegendRef.current = false; // Reset so legend shows for loaded session
+          // Defer clustering to after initial render
+          setTimeout(() => {
+            // Build graph state for clustering
+            const clusterGraphState = buildGraphState(sessionId, layoutedNodes, edges);
+            clusterNodes(allNodesContext, sessionId, clusterGraphState, session.idToken)
+              .then((result) => {
+                setClusterData(result.clusters);
+                if (result.costInfo) {
+                  setCostInfo(result.costInfo);
+                }
+              })
+              .catch((error) => {
+                // Don't show error for auth errors - user will be redirected to sign-in
+                if (error instanceof AuthError) {
+                  console.log('Authentication required for clustering - user will be signed out');
+                  return;
+                }
+                console.error('Clustering failed on session load:', error);
+              });
+          }, 100); // Small delay to let UI render first
+        } else {
+          // Clear cluster data if not enough nodes
+          setClusterData(null);
+          hasShownLegendRef.current = false;
+        }
+      }
+    };
+    
+    // Try to find sessionId from cached sessions list first (optimize API calls)
+    let sessionId: string | null = null;
+    const cachedSessionsList = getCachedSessionsList();
+    if (cachedSessionsList) {
+      const matchingSession = cachedSessionsList.sessions.find(s => s.name === name || s.session_id === name);
+      if (matchingSession) {
+        sessionId = matchingSession.session_id;
+      }
+    }
+    
+    // Try cache first for instant load
+    if (sessionId) {
+      const cached = getCachedSession(sessionId);
+      if (cached) {
+        // Load from cache immediately
+        const nodesToUse = cached.nodes.length > 0 ? cached.nodes : INITIAL_NODES;
+        const edgesToUse = cached.nodes.length > 0 ? cached.edges : INITIAL_EDGES;
+        applySessionData(cached.sessionId, cached.name, nodesToUse, edgesToUse, true);
+        
+        // Sync from backend in background if authenticated
+        if (session?.idToken) {
+          syncSessionFromBackend(sessionId, name, applySessionData).catch(() => {
+            // Silently fail - we already have cached data
+          });
+        }
+        return;
+      }
+    }
+    
+    // No cache available, load from backend
+    if (!session?.idToken) {
+      // Not authenticated and no cache - can't load
+      console.warn('Cannot load session: not authenticated and no cache available');
+      return;
+    }
+    
+    try {
+      // Get sessionId from backend if not found in cache
+      if (!sessionId) {
+        const backendSessions = await listSessions(session.idToken);
+        const matchingSession = backendSessions.find(s => s.name === name || s.session_id === name);
+        if (!matchingSession) {
+          console.warn(`Session "${name}" not found in backend`);
+          return;
+        }
+        sessionId = matchingSession.session_id;
+      }
+      
+      // Load session data from backend
+      const sessionData = await getSession(sessionId, session.idToken);
+      const graphState = sessionData.graph_state;
+      
+      // Convert minimal nodes/edges to full format
+      const loadedNodes = minimalToNodes(graphState.nodes || []);
+      const loadedEdges = minimalToEdges(graphState.edges || []);
+      
+      // If no nodes, use initial nodes
+      const nodesToUse = loadedNodes.length > 0 ? loadedNodes : INITIAL_NODES;
+      const edgesToUse = loadedNodes.length > 0 ? loadedEdges : INITIAL_EDGES;
+      
+      // Cache the session data
+      setCachedSession(
+        sessionId,
+        sessionData.session.name || name,
+        nodesToUse,
+        edgesToUse,
+        sessionData.session.created_at
+      );
+      
+      // Apply to UI
+      applySessionData(sessionId, sessionData.session.name || name, nodesToUse, edgesToUse, true);
+    } catch (error) {
+      // Don't show error for auth errors - user will be redirected to sign-in
+      if (error instanceof AuthError) {
+        console.log('Authentication required to load session - user will be signed out');
+        return;
+      }
       console.error('Failed to load session:', error);
     }
-  }, [setNodes, setEdges, session]);
+  }, [setNodes, setEdges, session, syncSessionFromBackend]);
 
   // Create new session
   const createNewSession = useCallback(() => {
@@ -1058,6 +1302,9 @@ export default function Canvas() {
     setClusterData(null); // Clear cluster data for new session
     hasShownLegendRef.current = false; // Reset legend visibility state
     setShouldFitView(true); // Trigger fitView to center the view
+    
+    // Cache the new session immediately
+    setCachedSession(newSessionId, 'New Session', INITIAL_NODES, INITIAL_EDGES);
     
     // Track session creation event
     if (session?.idToken) {
@@ -1088,26 +1335,43 @@ export default function Canvas() {
     }
   }, [setNodes, setEdges, session]);
 
-  // Delete a session
-  const deleteSession = useCallback((name: string) => {
+  // Delete a session (removes from cache and local list, backend data persists)
+  const deleteSession = useCallback(async (name: string) => {
     if (typeof window === 'undefined') return;
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const allSessions: Sessions = JSON.parse(stored);
-        const sessionData = allSessions[name];
-        const sessionId = sessionData?.sessionId;
+    
+    // Try to find sessionId from cache first
+    let sessionId: string | null = null;
+    const cachedSessionsList = getCachedSessionsList();
+    if (cachedSessionsList) {
+      const matchingSession = cachedSessionsList.sessions.find(s => s.name === name || s.session_id === name);
+      if (matchingSession) {
+        sessionId = matchingSession.session_id;
+      }
+    }
+    
+    // Clear cache immediately
+    if (sessionId) {
+      clearCachedSession(sessionId);
+    }
+    
+    // If authenticated, sync with backend
+    if (session?.idToken) {
+      try {
+        // Get all sessions from backend to find the one to delete
+        const backendSessions = await listSessions(session.idToken);
+        const matchingSession = backendSessions.find(s => s.name === name || s.session_id === name);
         
-        delete allSessions[name];
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(allSessions));
-        loadSessionsList();
-        
-        // Track session deletion event
-        if (session?.idToken && sessionId) {
+        if (matchingSession) {
+          const backendSessionId = matchingSession.session_id;
+          
+          // Clear cache for backend sessionId (in case it's different)
+          clearCachedSession(backendSessionId);
+          
+          // Track session deletion event
           trackEvent({
             event_type: 'session_delete',
             event_category: 'session',
-            session_id: sessionId,
+            session_id: backendSessionId,
             metadata: {
               name: name,
             },
@@ -1115,43 +1379,93 @@ export default function Canvas() {
             console.debug('Failed to track session deletion:', err);
           });
         }
+        
+        // Remove from local sessions list (reload from backend)
+        loadSessionsList();
+      } catch (error) {
+        // Don't show error for auth errors - user will be redirected to sign-in
+        if (error instanceof AuthError) {
+          return;
+        }
+        console.error('Failed to delete session:', error);
+        // Still reload sessions list from cache
+        loadSessionsList();
       }
-    } catch (error) {
-      console.error('Failed to delete session:', error);
+    } else {
+      // Not authenticated, just reload from cache
+      loadSessionsList();
     }
   }, [loadSessionsList, session]);
 
-  // Initialize: Load sessions list and last session on mount
+  // Initialize: Load sessions list and last session on mount (cache first for instant load)
   useEffect(() => {
     if (typeof window === 'undefined' || isInitialized) return;
     
     setIsInitialized(true);
 
-    // Load sessions list (non-blocking)
-    loadSessionsList();
-
-    // Try to load the first available session
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const allSessions: Sessions = JSON.parse(stored);
-        const sessionNames = Object.keys(allSessions);
-        if (sessionNames.length > 0) {
-          const lastSession = sessionNames[sessionNames.length - 1];
-          // Load session immediately to show content
-          loadSession(lastSession);
-          return;
-        }
+    // Try cache first for instant load
+    const cachedSessionsList = getCachedSessionsList();
+    if (cachedSessionsList && cachedSessionsList.sessions.length > 0) {
+      const sessionNames = cachedSessionsList.sessions.map(s => s.name || s.session_id);
+      setSessions(sessionNames);
+      
+      // Try to load most recent session from cache
+      const mostRecentSession = cachedSessionsList.sessions[0];
+      const sessionName = mostRecentSession.name || mostRecentSession.session_id;
+      const cachedSession = getCachedSession(mostRecentSession.session_id);
+      
+      if (cachedSession) {
+        // Load from cache immediately
+        const nodesToUse = cachedSession.nodes.length > 0 ? cachedSession.nodes : INITIAL_NODES;
+        const edgesToUse = cachedSession.nodes.length > 0 ? cachedSession.edges : INITIAL_EDGES;
+        const layoutedNodes = layoutNodes(nodesToUse, edgesToUse);
+        setNodes(layoutedNodes);
+        setEdges(edgesToUse);
+        setCurrentSessionName(cachedSession.name);
+        setCurrentSessionId(cachedSession.sessionId);
+        setShouldFitView(true);
+      } else {
+        // Cache list exists but not session data, try to load it
+        loadSession(sessionName);
       }
-    } catch (error) {
-      console.error('Failed to load initial session:', error);
+    } else {
+      // No cache, initialize with default
+      setNodes(INITIAL_NODES);
+      setEdges(INITIAL_EDGES);
+      setShouldFitView(true);
     }
 
-    // If no sessions, initialize with default (show immediately)
-    setNodes(INITIAL_NODES);
-    setEdges(INITIAL_EDGES);
-    setShouldFitView(true); // Trigger fitView to center the view on initial load
-  }, [setNodes, setEdges, loadSessionsList, loadSession, isInitialized]);
+    // Sync from backend in background if authenticated
+    if (session?.idToken) {
+      loadSessionsList().then(() => {
+        // After syncing sessions list, try to load the most recent session from backend
+        listSessions(session.idToken)
+          .then((backendSessions) => {
+            if (backendSessions.length > 0) {
+              // Load the most recently accessed session (first in list, sorted by last_accessed_at DESC)
+              const mostRecentSession = backendSessions[0];
+              const sessionName = mostRecentSession.name || mostRecentSession.session_id;
+              // This will use cache if available, otherwise load from backend
+              loadSession(sessionName);
+            }
+          })
+          .catch((error) => {
+            // Don't show error for auth errors - user will be redirected to sign-in
+            if (error instanceof AuthError) {
+              return;
+            }
+            console.debug('Failed to sync initial session from backend:', error);
+            // We already have cache or default, so continue
+          });
+      }).catch((error) => {
+        // If loading sessions list fails, we still have cache or default
+        if (error instanceof AuthError) {
+          return;
+        }
+        console.debug('Failed to sync sessions list from backend:', error);
+      });
+    }
+  }, [setNodes, setEdges, loadSessionsList, loadSession, isInitialized, session?.idToken]);
 
   // Initialize session ID on mount if it's empty (from SSR)
   useEffect(() => {
@@ -1293,7 +1607,7 @@ export default function Canvas() {
         setCurrentSessionName(newName);
       }
 
-      // Save to localStorage
+      // Save to backend
       saveSession(currentSessionName, nodes, edges);
     }
   }, [nodes, edges, currentSessionName, generateSessionName, saveSession]);

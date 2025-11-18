@@ -1651,6 +1651,71 @@ async def list_sessions(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/sessions/{session_id}")
+async def get_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get a specific session by session_id. Returns the latest snapshot of the session.
+    Requires authentication and session ownership.
+    """
+    try:
+        user_id = current_user["sub"]
+        sb = get_supabase()
+        
+        if not sb:
+            raise HTTPException(status_code=503, detail="Database not available")
+        
+        # Verify session exists and user is owner
+        session_response = sb.table('sessions').select('*').eq('session_id', session_id).execute()
+        
+        if not session_response.data:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        session_data = session_response.data[0]
+        if session_data.get('user_id') != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to access this session")
+        
+        # Get the latest snapshot for this session
+        snapshot_response = sb.table('session_snapshots').select('*').eq('session_id', session_id).order('created_at', desc=True).limit(1).execute()
+        
+        if not snapshot_response.data:
+            # No snapshot exists yet, return empty state
+            return {
+                "session": {
+                    "session_id": session_id,
+                    "name": session_data.get('name', 'New Session'),
+                    "created_at": session_data.get('created_at'),
+                    "user_id": session_data.get('user_id'),
+                },
+                "graph_state": {
+                    "sessionId": session_id,
+                    "nodes": [],
+                    "edges": []
+                }
+            }
+        
+        snapshot = snapshot_response.data[0]
+        graph_state = snapshot.get('graph_state', {})
+        
+        # Return session metadata and graph state
+        return {
+            "session": {
+                "session_id": session_id,
+                "name": session_data.get('name', 'New Session'),
+                "created_at": session_data.get('created_at'),
+                "user_id": session_data.get('user_id'),
+            },
+            "graph_state": graph_state
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting session: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============================================================================
 # SESSION SHARING ENDPOINTS
 # ============================================================================

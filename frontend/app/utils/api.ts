@@ -547,6 +547,34 @@ export async function listSessions(idToken?: string): Promise<Session[]> {
   }
 }
 
+/**
+ * Get a specific session by session_id. Returns the latest snapshot of the session.
+ */
+export async function getSession(sessionId: string, idToken?: string): Promise<SharedSessionData> {
+  try {
+    const response = await fetchWithAuth(`${API_BASE_URL}/sessions/${sessionId}`, {
+      method: 'GET',
+    }, idToken);
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error('Session not found');
+      }
+      throw new Error(`Failed to get session: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    // Re-throw AuthError so it can be handled
+    if (error instanceof AuthError) {
+      throw error;
+    }
+    console.error('Failed to get session:', error);
+    throw error;
+  }
+}
+
 // ============================================================================
 // SESSION SHARING
 // ============================================================================
