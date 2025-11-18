@@ -42,14 +42,23 @@ function minimalToNodes(minimalNodes: MinimalNode[]): Node<CardNodeData>[] {
 }
 
 function minimalToEdges(minimalEdges: MinimalEdge[]): Edge[] {
-  return minimalEdges.map((edge, index) => ({
-    id: `${edge.source}-${edge.target}-${index}`, // Generate ID from source and target
-    source: edge.source,
-    target: edge.target,
-    type: 'custom',
-    style: { stroke: '#9CA3AF', strokeWidth: 2 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#9CA3AF' },
-  }));
+  return minimalEdges.map((edge, index) => {
+    const edgeColor = edge.data?.color || '#9CA3AF';
+    return {
+      id: `${edge.source}-${edge.target}-${index}`, // Generate ID from source and target
+      source: edge.source,
+      target: edge.target,
+      type: 'custom',
+      label: edge.label, // Include the question label so viewers can see what was asked
+      style: { 
+        stroke: edgeColor, 
+        strokeWidth: 2,
+        opacity: 0.8, // Make edges more visible
+      },
+      markerEnd: { type: MarkerType.ArrowClosed, color: edgeColor },
+      data: edge.data, // Include edge data (color, userQuery, etc.)
+    };
+  });
 }
 
 interface SharedCanvasProps {
@@ -261,9 +270,11 @@ function SharedCanvasInner({ shareToken }: SharedCanvasProps) {
           panOnScrollSpeed={1}
           defaultEdgeOptions={{
             type: 'custom',
-            style: { stroke: '#9CA3AF', strokeWidth: 2 },
+            style: { stroke: '#9CA3AF', strokeWidth: 2, opacity: 0.8 },
             markerEnd: { type: MarkerType.ArrowClosed, color: '#9CA3AF' },
           }}
+          edgesUpdatable={false}
+          edgesFocusable={true}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
         >
