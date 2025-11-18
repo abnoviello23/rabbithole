@@ -711,11 +711,11 @@ export default function Canvas() {
           }
         });
 
-        // Call clustering asynchronously
-        if (Object.keys(allNodesContext).length > 1) {
+        // Call clustering asynchronously (only if authenticated)
+        if (Object.keys(allNodesContext).length > 1 && session?.idToken) {
           // Build graph state for clustering
           const clusterGraphState = buildGraphState(currentSessionId, updatedNodes, currentEdges);
-          clusterNodes(allNodesContext, currentSessionId, clusterGraphState, session?.idToken)
+          clusterNodes(allNodesContext, currentSessionId, clusterGraphState, session.idToken)
             .then((result) => {
               setClusterData(result.clusters);
               if (result.costInfo) {
@@ -819,21 +819,31 @@ export default function Canvas() {
       const graphState = buildGraphState(currentSessionId, nodes, edges);
 
       // Run both semantic search and clustering in parallel (floatingChat source)
-      const [autoModeResult, clusterResult] = await Promise.all([
-        autoMode(query, context, currentSessionId, graphState, 'floating_chat', session?.idToken),
-        clusterNodes(context, currentSessionId, graphState, session?.idToken)
-      ]);
+      // Only run clustering if authenticated
+      const promises: Promise<any>[] = [
+        autoMode(query, context, currentSessionId, graphState, 'floating_chat', session?.idToken)
+      ];
+      
+      if (session?.idToken) {
+        promises.push(clusterNodes(context, currentSessionId, graphState, session.idToken));
+      }
+      
+      const results = await Promise.all(promises);
+      const autoModeResult = results[0];
+      const clusterResult = results[1];
 
       // Update cost info from both results
       if (autoModeResult.costInfo) {
         setCostInfo(autoModeResult.costInfo);
       }
-      if (clusterResult.costInfo) {
+      if (clusterResult?.costInfo) {
         setCostInfo(clusterResult.costInfo);
       }
 
       // Store cluster data (logs are in backend)
-      setClusterData(clusterResult.clusters);
+      if (clusterResult) {
+        setClusterData(clusterResult.clusters);
+      }
 
       // Highlight and select the matched node
       setSelectedNodeId(autoModeResult.node_id);
@@ -1004,13 +1014,13 @@ export default function Canvas() {
           });
           
           // Cluster the loaded nodes if there are enough nodes (deferred to avoid blocking)
-          if (Object.keys(allNodesContext).length > 1) {
+          if (Object.keys(allNodesContext).length > 1 && session?.idToken) {
             hasShownLegendRef.current = false; // Reset so legend shows for loaded session
             // Defer clustering to after initial render
             setTimeout(() => {
               // Build graph state for clustering
               const clusterGraphState = buildGraphState(loadedSessionId, filteredNodes, filteredEdges);
-              clusterNodes(allNodesContext, loadedSessionId, clusterGraphState, session?.idToken)
+              clusterNodes(allNodesContext, loadedSessionId, clusterGraphState, session.idToken)
                 .then((result) => {
                   setClusterData(result.clusters);
                   if (result.costInfo) {
@@ -1027,7 +1037,7 @@ export default function Canvas() {
                 });
             }, 100); // Small delay to let UI render first
           } else {
-            // Clear cluster data if not enough nodes
+            // Clear cluster data if not enough nodes or not authenticated
             setClusterData(null);
             hasShownLegendRef.current = false;
           }

@@ -168,7 +168,7 @@ function getAuthHeaders(idToken?: string): HeadersInit {
 }
 
 /**
- * Wrapper for fetch that handles 401 errors automatically
+ * Wrapper for fetch that handles 401 and 403 errors automatically
  */
 async function fetchWithAuth(
   url: string,
@@ -184,8 +184,9 @@ async function fetchWithAuth(
     },
   });
 
-  // Handle 401 errors by triggering sign out
-  if (response.status === 401) {
+  // Handle 401 and 403 errors by triggering sign out
+  // 403 can occur when authentication token is missing or invalid
+  if (response.status === 401 || response.status === 403) {
     handleAuthError();
     throw new AuthError('Unauthorized - please sign in again');
   }
