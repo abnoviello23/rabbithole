@@ -3,12 +3,17 @@
 import { useState, useRef, useEffect } from 'react';
 import { FolderOpen, Plus, Trash2, ChevronDown } from 'lucide-react';
 
+interface Session {
+  name: string;
+  session_id: string;
+}
+
 interface SessionManagerProps {
   currentSession: string;
-  sessions: string[];
-  onLoadSession: (name: string) => void;
+  sessions: Session[];
+  onLoadSession: (session: Session | string) => void;
   onCreateSession: () => void;
-  onDeleteSession: (name: string) => void;
+  onDeleteSession: (session: Session | string) => void;
 }
 
 export function SessionManager({
@@ -73,9 +78,9 @@ export function SessionManager({
             ) : (
               sessions.map((session) => (
                 <div
-                  key={session}
+                  key={session.session_id}
                   className={`flex items-center justify-between px-4 py-2 hover:bg-white/10 transition-colors ${
-                    session === currentSession ? 'bg-white/5' : ''
+                    session.name === currentSession ? 'bg-white/5' : ''
                   }`}
                 >
                   <button
@@ -85,9 +90,9 @@ export function SessionManager({
                     }}
                     className="flex-1 text-left text-sm text-white truncate"
                   >
-                    {session}
+                    {session.name}
                   </button>
-                  {session !== currentSession && (
+                  {session.name !== currentSession && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();

@@ -316,7 +316,7 @@ export default function Canvas() {
     }
     return ''; // Temporary value for SSR, will be set on mount
   });
-  const [sessions, setSessions] = useState<string[]>([]);
+  const [sessions, setSessions] = useState<Array<{ name: string; session_id: string }>>([]);
   const saveTimeoutRef = useRef<NodeJS.Timeout>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [isChatPanelOpen, setIsChatPanelOpen] = useState(false);
@@ -1009,8 +1009,11 @@ export default function Canvas() {
       // If not authenticated, try to load from cache anyway
       const cached = getCachedSessionsList();
       if (cached) {
-        const sessionNames = cached.sessions.map(s => s.name || s.session_id);
-        setSessions(sessionNames);
+        const sessionObjects = cached.sessions.map(s => ({
+          name: s.name || s.session_id,
+          session_id: s.session_id
+        }));
+        setSessions(sessionObjects);
       }
       return;
     }
@@ -1018,16 +1021,22 @@ export default function Canvas() {
     // Try cache first for instant load
     const cached = getCachedSessionsList();
     if (cached) {
-      const sessionNames = cached.sessions.map(s => s.name || s.session_id);
-      setSessions(sessionNames);
+      const sessionObjects = cached.sessions.map(s => ({
+        name: s.name || s.session_id,
+        session_id: s.session_id
+      }));
+      setSessions(sessionObjects);
     }
     
     // Sync from backend in background
     try {
       const backendSessions = await listSessions(session.idToken);
-      // Use session names from backend, fallback to session_id if name not available
-      const sessionNames = backendSessions.map(s => s.name || s.session_id);
-      setSessions(sessionNames);
+      // Store as objects with both name and session_id for unique keys
+      const sessionObjects = backendSessions.map(s => ({
+        name: s.name || s.session_id,
+        session_id: s.session_id
+      }));
+      setSessions(sessionObjects);
       
       // Update cache with fresh data
       setCachedSessionsList(backendSessions);
@@ -1147,8 +1156,35 @@ export default function Canvas() {
   }, [session?.idToken]);
 
   // Load a specific session: cache first (instant), then sync from backend
-  const loadSession = useCallback(async (name: string) => {
+  // Accepts either a session name string or a session object with {name, session_id}
+  const loadSession = useCallback(async (sessionIdentifier: string | { name: string; session_id: string }) => {
     if (typeof window === 'undefined') return;
+    
+    // Normalize input: convert to session object if it's a string
+    let sessionName: string;
+    let sessionId: string | null = null;
+    
+    if (typeof sessionIdentifier === 'string') {
+      sessionName = sessionIdentifier;
+      // Try to find sessionId from cached sessions list or current sessions state
+      const cachedSessionsList = getCachedSessionsList();
+      if (cachedSessionsList) {
+        const matchingSession = cachedSessionsList.sessions.find(s => s.name === sessionName || s.session_id === sessionName);
+        if (matchingSession) {
+          sessionId = matchingSession.session_id;
+        }
+      }
+      // Also check current sessions state
+      if (!sessionId) {
+        const matchingSession = sessions.find(s => s.name === sessionName || s.session_id === sessionName);
+        if (matchingSession) {
+          sessionId = matchingSession.session_id;
+        }
+      }
+    } else {
+      sessionName = sessionIdentifier.name;
+      sessionId = sessionIdentifier.session_id;
+    }
     
     // Helper function to apply session data to UI
     const applySessionData = (
@@ -1211,16 +1247,6 @@ export default function Canvas() {
       }
     };
     
-    // Try to find sessionId from cached sessions list first (optimize API calls)
-    let sessionId: string | null = null;
-    const cachedSessionsList = getCachedSessionsList();
-    if (cachedSessionsList) {
-      const matchingSession = cachedSessionsList.sessions.find(s => s.name === name || s.session_id === name);
-      if (matchingSession) {
-        sessionId = matchingSession.session_id;
-      }
-    }
-    
     // Try cache first for instant load
     if (sessionId) {
       const cached = getCachedSession(sessionId);
@@ -1232,7 +1258,7 @@ export default function Canvas() {
         
         // Sync from backend in background if authenticated
         if (session?.idToken) {
-          syncSessionFromBackend(sessionId, name, applySessionData).catch(() => {
+          syncSessionFromBackend(sessionId, sessionName, applySessionData).catch(() => {
             // Silently fail - we already have cached data
           });
         }
@@ -1251,9 +1277,9 @@ export default function Canvas() {
       // Get sessionId from backend if not found in cache
       if (!sessionId) {
         const backendSessions = await listSessions(session.idToken);
-        const matchingSession = backendSessions.find(s => s.name === name || s.session_id === name);
+        const matchingSession = backendSessions.find(s => s.name === sessionName || s.session_id === sessionName);
         if (!matchingSession) {
-          console.warn(`Session "${name}" not found in backend`);
+          console.warn(`Session "${sessionName}" not found in backend`);
           return;
         }
         sessionId = matchingSession.session_id;
@@ -1274,14 +1300,14 @@ export default function Canvas() {
       // Cache the session data
       setCachedSession(
         sessionId,
-        sessionData.session.name || name,
+        sessionData.session.name || sessionName,
         nodesToUse,
         edgesToUse,
         sessionData.session.created_at
       );
       
       // Apply to UI
-      applySessionData(sessionId, sessionData.session.name || name, nodesToUse, edgesToUse, true);
+      applySessionData(sessionId, sessionData.session.name || sessionName, nodesToUse, edgesToUse, true);
     } catch (error) {
       // Don't show error for auth errors - user will be redirected to sign-in
       if (error instanceof AuthError) {
@@ -1290,7 +1316,7 @@ export default function Canvas() {
       }
       console.error('Failed to load session:', error);
     }
-  }, [setNodes, setEdges, session, syncSessionFromBackend]);
+  }, [setNodes, setEdges, session, syncSessionFromBackend, sessions]);
 
   // Create new session
   const createNewSession = useCallback(() => {
@@ -1336,17 +1362,34 @@ export default function Canvas() {
   }, [setNodes, setEdges, session]);
 
   // Delete a session (removes from cache and local list, backend data persists)
-  const deleteSession = useCallback(async (name: string) => {
+  // Accepts either a session name string or a session object with {name, session_id}
+  const deleteSession = useCallback(async (sessionIdentifier: string | { name: string; session_id: string }) => {
     if (typeof window === 'undefined') return;
     
-    // Try to find sessionId from cache first
+    // Normalize input: convert to session object if it's a string
+    let sessionName: string;
     let sessionId: string | null = null;
-    const cachedSessionsList = getCachedSessionsList();
-    if (cachedSessionsList) {
-      const matchingSession = cachedSessionsList.sessions.find(s => s.name === name || s.session_id === name);
-      if (matchingSession) {
-        sessionId = matchingSession.session_id;
+    
+    if (typeof sessionIdentifier === 'string') {
+      sessionName = sessionIdentifier;
+      // Try to find sessionId from cache or current sessions state
+      const cachedSessionsList = getCachedSessionsList();
+      if (cachedSessionsList) {
+        const matchingSession = cachedSessionsList.sessions.find(s => s.name === sessionName || s.session_id === sessionName);
+        if (matchingSession) {
+          sessionId = matchingSession.session_id;
+        }
       }
+      // Also check current sessions state
+      if (!sessionId) {
+        const matchingSession = sessions.find(s => s.name === sessionName || s.session_id === sessionName);
+        if (matchingSession) {
+          sessionId = matchingSession.session_id;
+        }
+      }
+    } else {
+      sessionName = sessionIdentifier.name;
+      sessionId = sessionIdentifier.session_id;
     }
     
     // Clear cache immediately
@@ -1359,7 +1402,7 @@ export default function Canvas() {
       try {
         // Get all sessions from backend to find the one to delete
         const backendSessions = await listSessions(session.idToken);
-        const matchingSession = backendSessions.find(s => s.name === name || s.session_id === name);
+        const matchingSession = backendSessions.find(s => s.name === sessionName || s.session_id === sessionName || s.session_id === sessionId);
         
         if (matchingSession) {
           const backendSessionId = matchingSession.session_id;
@@ -1373,7 +1416,7 @@ export default function Canvas() {
             event_category: 'session',
             session_id: backendSessionId,
             metadata: {
-              name: name,
+              name: sessionName,
             },
           }, session.idToken).catch(err => {
             console.debug('Failed to track session deletion:', err);
@@ -1395,7 +1438,7 @@ export default function Canvas() {
       // Not authenticated, just reload from cache
       loadSessionsList();
     }
-  }, [loadSessionsList, session]);
+  }, [loadSessionsList, session, sessions]);
 
   // Initialize: Load sessions list and last session on mount (cache first for instant load)
   useEffect(() => {
@@ -1406,12 +1449,14 @@ export default function Canvas() {
     // Try cache first for instant load
     const cachedSessionsList = getCachedSessionsList();
     if (cachedSessionsList && cachedSessionsList.sessions.length > 0) {
-      const sessionNames = cachedSessionsList.sessions.map(s => s.name || s.session_id);
-      setSessions(sessionNames);
+      const sessionObjects = cachedSessionsList.sessions.map(s => ({
+        name: s.name || s.session_id,
+        session_id: s.session_id
+      }));
+      setSessions(sessionObjects);
       
       // Try to load most recent session from cache
       const mostRecentSession = cachedSessionsList.sessions[0];
-      const sessionName = mostRecentSession.name || mostRecentSession.session_id;
       const cachedSession = getCachedSession(mostRecentSession.session_id);
       
       if (cachedSession) {
@@ -1426,7 +1471,10 @@ export default function Canvas() {
         setShouldFitView(true);
       } else {
         // Cache list exists but not session data, try to load it
-        loadSession(sessionName);
+        loadSession({
+          name: mostRecentSession.name || mostRecentSession.session_id,
+          session_id: mostRecentSession.session_id
+        });
       }
     } else {
       // No cache, initialize with default
@@ -1444,9 +1492,11 @@ export default function Canvas() {
             if (backendSessions.length > 0) {
               // Load the most recently accessed session (first in list, sorted by last_accessed_at DESC)
               const mostRecentSession = backendSessions[0];
-              const sessionName = mostRecentSession.name || mostRecentSession.session_id;
               // This will use cache if available, otherwise load from backend
-              loadSession(sessionName);
+              loadSession({
+                name: mostRecentSession.name || mostRecentSession.session_id,
+                session_id: mostRecentSession.session_id
+              });
             }
           })
           .catch((error) => {
